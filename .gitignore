@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+.coverage
+.pytest_cache/
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local config and secrets
+config/settings.local.toml
+.env
+
+# Local data artifacts
+data/**
+!data/**/
+!data/**/.gitkeep

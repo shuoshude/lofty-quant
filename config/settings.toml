@@ -1,0 +1,22 @@
+[project]
+name = "lofty-quant"
+timezone = "Asia/Shanghai"
+
+[paths]
+raw_dir = "data/raw"
+processed_dir = "data/processed"
+database_path = "data/db/quant.duckdb"
+notebooks_dir = "notebooks"
+
+[market]
+code_suffixes = [".SZ", ".SH", ".BJ"]
+
+[trading]
+stamp_tax_rate = 0.001
+commission_rate = 0.00025
+transfer_fee_rate = 0.00002
+min_commission = 5.0
+
+[backtest]
+initial_cash = 1000000.0
+benchmark = "000300.SH"

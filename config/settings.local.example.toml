@@ -1,0 +1,7 @@
+# Copy to config/settings.local.toml for machine-specific non-secret overrides.
+# This file is loaded last and overrides settings.toml and settings.<env>.toml.
+
+[paths]
+# raw_dir = "/absolute/path/to/local/raw"
+# processed_dir = "/absolute/path/to/local/processed"
+# database_path = "/absolute/path/to/local/quant.duckdb"
