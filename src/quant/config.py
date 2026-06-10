@@ -33,6 +33,7 @@ class PathsConfig(BaseModel):
     processed_dir: Path
     database_path: Path
     notebooks_dir: Path
+    log_dir: Path
 
     @classmethod
     def from_raw(cls, raw: Mapping[str, Any], base_dir: Path) -> Self:
@@ -129,6 +130,7 @@ def load_config(
         return QuantConfig.from_mapping(raw, project_root)
     except ValidationError as exc:
         raise ValueError(f"invalid config from settings files: {settings_files}") from exc
+
 
 # 获取项目根目录
 def get_project_root(start: Path | None = None) -> Path:

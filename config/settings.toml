@@ -7,6 +7,7 @@ raw_dir = "data/raw"
 processed_dir = "data/processed"
 database_path = "data/db/quant.duckdb"
 notebooks_dir = "notebooks"
+log_dir = "log"
 
 [market]
 code_suffixes = [".SZ", ".SH", ".BJ"]

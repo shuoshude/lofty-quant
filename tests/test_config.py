@@ -14,6 +14,7 @@ def test_load_default_config_resolves_paths() -> None:
     assert config.paths.raw_dir == project_root / "data" / "raw"
     assert config.paths.processed_dir == project_root / "data" / "processed"
     assert config.paths.database_path == project_root / "data" / "db" / "quant.duckdb"
+    assert config.paths.log_dir == project_root / "log"
     assert config.market.code_suffixes == (".SZ", ".SH", ".BJ")
 
 
@@ -29,6 +30,7 @@ raw_dir = "raw"
 processed_dir = "processed"
 database_path = "db/base.duckdb"
 notebooks_dir = "notebooks"
+log_dir = "log"
 
 [backtest]
 initial_cash = 100.0
@@ -109,6 +111,7 @@ raw_dir = "raw"
 processed_dir = "processed"
 database_path = "db/quant.duckdb"
 notebooks_dir = "notebooks"
+log_dir = "log"
 
 [trading]
 commission_rate = -0.1
@@ -136,6 +139,7 @@ raw_dir = "raw"
 processed_dir = "processed"
 database_path = "db/quant.duckdb"
 notebooks_dir = "notebooks"
+log_dir = "log"
 """,
     )
 

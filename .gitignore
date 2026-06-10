@@ -19,3 +19,6 @@ config/settings.local.toml
 data/**
 !data/**/
 !data/**/.gitkeep
+
+# Runtime logs
+log/

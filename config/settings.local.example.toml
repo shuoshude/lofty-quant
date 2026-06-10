@@ -5,3 +5,4 @@
 # raw_dir = "/absolute/path/to/local/raw"
 # processed_dir = "/absolute/path/to/local/processed"
 # database_path = "/absolute/path/to/local/quant.duckdb"
+# log_dir = "/absolute/path/to/local/log"
