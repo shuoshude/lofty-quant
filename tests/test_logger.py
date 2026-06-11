@@ -33,6 +33,7 @@ def test_log_format_includes_timestamp_level_location_and_message() -> None:
 
 
 def write_settings(path: Path, log_dir: Path) -> None:
+    toml_log_dir = log_dir.as_posix()
     path.write_text(
         f"""
 [project]
@@ -43,7 +44,7 @@ raw_dir = "data/raw"
 processed_dir = "data/processed"
 database_path = "data/db/test.duckdb"
 notebooks_dir = "notebooks"
-log_dir = "{log_dir}"
+log_dir = "{toml_log_dir}"
 """,
         encoding="utf-8",
     )
