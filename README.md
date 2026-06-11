@@ -1,6 +1,6 @@
 # lofty-quant
 
-个人 A 股量化交易系统。当前项目处于基础设施搭建阶段，已经完成项目骨架、TOML 配置加载和 Loguru 日志配置；数据 ETL、因子、策略、回测等模块目前仍是占位目录，后续按设计文档逐步实现。
+个人 A 股量化交易系统。当前项目处于基础设施搭建阶段，已经完成项目骨架、TOML 配置加载、Loguru 日志配置，以及 A 股日线研究版 DuckDB 数据层；ETL、因子、策略、回测等模块后续按设计文档逐步实现。
 
 ## 技术栈
 
@@ -28,7 +28,7 @@
 ├── src/quant/
 │   ├── config.py                     # 统一配置加载
 │   ├── logger.py                     # 统一日志配置
-│   ├── data/                         # 数据访问层占位
+│   ├── data/                         # DuckDB schema、数据模型和查询入口
 │   ├── etl/                          # ETL 占位
 │   ├── features/                     # 因子工程占位
 │   ├── strategy/                     # 策略层占位
@@ -126,6 +126,107 @@ log_dir = "log"
 - 单文件超过 10MB 自动分块
 - 日志格式包含时间戳、日志级别、模块/函数/行号和消息
 
+## 数据层 / DuckDB Schema
+
+数据层采用混合模式：小型维表和元数据表写入 DuckDB，大型时序数据以 Parquet 保存，再由 DuckDB 注册成视图查询。
+
+核心文件：
+
+- `src/quant/data/schemas.py`：Pydantic 数据契约，校验 `ts_code`、OHLC、成交量、涨跌停状态、财务公告日期等。
+- `src/quant/data/db.py`：DuckDB 连接和 schema 初始化，创建实体表并注册 Parquet 视图。
+- `src/quant/data/repository.py`：唯一公开查询入口，业务代码不要在其他模块直接写 SQL。
+
+### 初始化数据库
+
+```python
+from quant.config import load_config
+from quant.data.db import DuckDBManager
+
+config = load_config()
+
+manager = DuckDBManager(
+    db_path=config.paths.database_path,
+    processed_dir=config.paths.processed_dir,
+)
+manager.initialize()
+```
+
+`initialize()` 会创建以下 DuckDB 实体表：
+
+- `dim_security`：股票主数据
+- `dim_trade_calendar`：交易日历
+- `etl_manifest`：ETL 加载记录
+
+如果 `data/processed/` 下存在对应 Parquet 文件，还会自动注册视图：
+
+```text
+data/processed/ohlcv/         -> v_daily_ohlcv
+data/processed/adj_factor/    -> v_adj_factor
+data/processed/daily_basic/   -> v_daily_basic
+data/processed/index_daily/   -> v_index_daily
+data/processed/fundamental/   -> v_fundamental
+data/processed/factors/       -> v_factors
+```
+
+当 `v_daily_ohlcv` 和 `v_adj_factor` 同时存在时，会额外创建 `v_daily_adj`，用于查询复权价格。
+
+### Parquet 分区约定
+
+日线行情、复权因子、每日指标、指数行情和因子按交易日期分区：
+
+```text
+data/processed/ohlcv/year=2024/month=01/*.parquet
+data/processed/adj_factor/year=2024/month=01/*.parquet
+data/processed/daily_basic/year=2024/month=01/*.parquet
+data/processed/index_daily/year=2024/month=01/*.parquet
+data/processed/factors/year=2024/month=01/*.parquet
+```
+
+财务数据按公告日期 `ann_date` 分区，避免回测时误用未来数据：
+
+```text
+data/processed/fundamental/year=2024/month=04/*.parquet
+```
+
+### 查询数据
+
+所有查询建议通过 `QuantRepository`：
+
+```python
+from datetime import date
+
+from quant.config import load_config
+from quant.data.db import DuckDBManager
+from quant.data.repository import QuantRepository
+
+config = load_config()
+manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+manager.initialize()
+
+with manager.session() as conn:
+    repo = QuantRepository(conn)
+
+    bars = repo.get_daily_bars(
+        "000001.SZ",
+        date(2024, 1, 1),
+        date(2024, 1, 31),
+        adjusted=True,
+    )
+
+    factors = repo.get_factors(
+        date(2024, 1, 31),
+        ["momentum_20d"],
+        factor_version="v1",
+    )
+```
+
+常用查询接口：
+
+- `get_daily_bars(ts_code, start, end, adjusted=True)`：查询单只股票日线，默认返回复权视图。
+- `get_cross_section(trade_date, fields, exclude_suspended=False)`：查询某日截面，可选择排除停牌股票。
+- `get_factors(trade_date, factor_names, factor_version=None)`：查询因子值。
+- `get_trade_calendar(start, end, exchange="SSE")`：查询交易日历。
+
 ## 常用命令
 
 ```bash
@@ -153,12 +254,13 @@ uv run mypy src/
 - TOML 多层配置加载
 - 环境变量机密读取
 - Loguru 日志配置
+- A 股日线研究版 DuckDB schema
+- Pydantic 数据模型
+- Repository 查询入口
 - 基础测试覆盖
 
 待实现：
 
-- A 股数据 schema
-- DuckDB 连接和 repository
 - ETL 读取、清洗、转换、加载
 - 技术指标和因子 pipeline
 - 策略基类和信号生成
