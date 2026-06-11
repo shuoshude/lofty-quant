@@ -22,3 +22,4 @@ data/**
 
 # Runtime logs
 log/
+.vscode/
