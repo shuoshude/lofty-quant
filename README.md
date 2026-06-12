@@ -111,6 +111,13 @@ setup_logger()
 logger.info("system started")
 ```
 
+如果需要写入模块专用日志，可以用 Loguru 的 `bind()` 绑定结构化字段。当前 `module="etl"` 会额外写入 ETL 专用日志文件：
+
+```python
+etl_logger = logger.bind(module="etl")
+etl_logger.info("etl started")
+```
+
 默认日志目录来自配置：
 
 ```toml
@@ -121,9 +128,10 @@ log_dir = "log"
 日志文件规则：
 
 - 默认保存到项目根目录 `log/`
-- 文件名按天：`lofty-quant_YYYY-MM-DD.log`
-- 跨天自动切换文件
+- 通用日志文件：`lofty-quant_YYYY-MM-DD.log`
+- ETL 专用文件：`etl_YYYY-MM-DD.log`
 - 单文件超过 10MB 自动分块
+- 日期来自 logger 初始化时的 `{time:YYYY-MM-DD}`，适合当前脚本/任务型运行方式
 - 日志格式包含时间戳、日志级别、模块/函数/行号和消息
 
 ## 数据层 / DuckDB Schema

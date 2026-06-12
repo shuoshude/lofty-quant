@@ -1,4 +1,4 @@
-"""Validated data contracts for A-share datasets."""
+"""A 股数据集的数据契约和校验规则。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ LimitStatus = Literal["up", "down", "none"]
 
 
 class AShareRecord(BaseModel):
-    """Base model with shared A-share validation behavior."""
+    """带有 A 股通用校验逻辑的基础模型。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -21,18 +21,18 @@ class AShareRecord(BaseModel):
     @field_validator("ts_code")
     @classmethod
     def validate_ts_code(cls, value: str) -> str:
-        """Ensure stock and index identifiers use Tushare exchange suffixes."""
+        """校验股票和指数代码是否使用 Tushare 交易所后缀。"""
         if not value or "." not in value:
-            raise ValueError("ts_code must include an exchange suffix")
+            raise ValueError("ts_code 必须包含交易所后缀")
 
         symbol, suffix = value.rsplit(".", maxsplit=1)
         if not symbol.isdigit() or suffix not in {"SZ", "SH", "BJ"}:
-            raise ValueError("ts_code must look like 000001.SZ, 600000.SH, or 430047.BJ")
+            raise ValueError("ts_code 格式应类似 000001.SZ, 600000.SH 或 430047.BJ")
         return value
 
 
 class SecurityRecord(AShareRecord):
-    """Security master data."""
+    """证券主数据。"""
 
     symbol: str
     name: str
@@ -44,7 +44,7 @@ class SecurityRecord(AShareRecord):
 
 
 class TradeCalendarRecord(BaseModel):
-    """Exchange trading calendar row."""
+    """交易所交易日历记录。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -55,7 +55,7 @@ class TradeCalendarRecord(BaseModel):
 
 
 class PriceRangeMixin(BaseModel):
-    """Shared OHLC validation."""
+    """OHLC 价格区间通用校验。"""
 
     open: float = Field(gt=0)
     high: float = Field(gt=0)
@@ -64,18 +64,18 @@ class PriceRangeMixin(BaseModel):
 
     @model_validator(mode="after")
     def validate_price_range(self) -> PriceRangeMixin:
-        """Ensure OHLC prices form a consistent range."""
+        """校验 OHLC 价格是否构成一致区间。"""
         if self.high < self.low:
-            raise ValueError("high cannot be lower than low")
+            raise ValueError("high 不能低于 low")
         if not self.low <= self.open <= self.high:
-            raise ValueError("open must be between low and high")
+            raise ValueError("open 必须位于 low 和 high 之间")
         if not self.low <= self.close <= self.high:
-            raise ValueError("close must be between low and high")
+            raise ValueError("close 必须位于 low 和 high 之间")
         return self
 
 
 class DailyOHLCVRecord(AShareRecord, PriceRangeMixin):
-    """Daily stock bar with A-share trading state flags."""
+    """包含 A 股交易状态标记的股票日线行情。"""
 
     trade_date: date
     pre_close: float | None = Field(default=None, gt=0)
@@ -89,14 +89,14 @@ class DailyOHLCVRecord(AShareRecord, PriceRangeMixin):
 
 
 class AdjFactorRecord(AShareRecord):
-    """Daily adjustment factor."""
+    """每日复权因子。"""
 
     trade_date: date
     adj_factor: float = Field(gt=0)
 
 
 class DailyBasicRecord(AShareRecord):
-    """Tushare-style daily valuation and share data."""
+    """Tushare 风格的每日估值和股本数据。"""
 
     trade_date: date
     turnover_rate: float | None = Field(default=None, ge=0)
@@ -114,7 +114,7 @@ class DailyBasicRecord(AShareRecord):
 
 
 class IndexDailyRecord(AShareRecord, PriceRangeMixin):
-    """Daily index bar."""
+    """指数日线行情。"""
 
     trade_date: date
     pre_close: float | None = Field(default=None, gt=0)
@@ -125,7 +125,7 @@ class IndexDailyRecord(AShareRecord, PriceRangeMixin):
 
 
 class FundamentalRecord(AShareRecord):
-    """Point-in-time fundamental snapshot keyed by announcement date."""
+    """按公告日期归档的基本面时点快照。"""
 
     ann_date: date
     report_date: date
@@ -143,7 +143,7 @@ class FundamentalRecord(AShareRecord):
 
 
 class FactorRecord(AShareRecord):
-    """Computed factor value for a security and trading date."""
+    """某证券在交易日上的因子计算结果。"""
 
     trade_date: date
     factor_name: str
@@ -152,7 +152,7 @@ class FactorRecord(AShareRecord):
 
 
 class ETLManifestRecord(BaseModel):
-    """ETL load manifest row."""
+    """ETL 加载清单记录。"""
 
     model_config = ConfigDict(frozen=True)
 

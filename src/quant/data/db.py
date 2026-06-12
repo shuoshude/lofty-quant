@@ -1,4 +1,12 @@
-"""DuckDB connection and schema management for A-share research data."""
+"""DuckDB 连接管理和 schema 定义。
+
+设计原则:
+- 大型不可变时序数据保存为分区 Parquet 文件, 并通过 read_parquet 注册为 DuckDB 视图。
+- 小型可变维表和元数据保存为带主键的 DuckDB 原生表。
+
+所有 SQL 查询应通过 src/quant/data/repository.py 进入。本模块只负责连接管理,
+schema 创建和视图注册。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +22,7 @@ from loguru import logger
 
 @dataclass(frozen=True)
 class ParquetDataset:
-    """Mapping between a processed Parquet folder and its DuckDB view."""
+    """处理后 Parquet 目录与 DuckDB 视图的映射。"""
 
     view_name: str
     folder_name: str
@@ -31,7 +39,7 @@ PARQUET_DATASETS = (
 
 
 class DuckDBManager:
-    """Manage DuckDB connections, physical tables, and Parquet-backed views."""
+    """管理 DuckDB 连接, 实体表和 Parquet 视图。"""
 
     def __init__(self, db_path: Path, processed_dir: Path) -> None:
         self._db_path = db_path.expanduser().resolve()
@@ -39,27 +47,27 @@ class DuckDBManager:
         self._conn: DuckDBPyConnection | None = None
 
     def connect(self) -> DuckDBPyConnection:
-        """Open a DuckDB connection."""
+        """打开 DuckDB 连接。"""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = duckdb.connect(str(self._db_path))
         return self._conn
 
     def initialize(self) -> None:
-        """Create physical schema and register any available Parquet views."""
+        """创建实体 schema 并注册可用的 Parquet 视图。"""
         with self.session() as conn:
             self._create_tables(conn)
             self._register_parquet_views(conn)
             self._create_derived_views(conn)
 
     def close(self) -> None:
-        """Close the active DuckDB connection if one exists."""
+        """关闭当前活动的 DuckDB 连接。"""
         if self._conn is not None:
             self._conn.close()
             self._conn = None
 
     @contextmanager
     def session(self) -> Generator[DuckDBPyConnection, None, None]:
-        """Yield a DuckDB connection and close it after use."""
+        """提供 DuckDB 连接并在使用后关闭。"""
         conn = self.connect()
         try:
             yield conn
@@ -67,7 +75,7 @@ class DuckDBManager:
             self.close()
 
     def _create_tables(self, conn: DuckDBPyConnection) -> None:
-        """Create small physical dimension and metadata tables."""
+        """创建小型实体维表和元数据表。"""
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS dim_security (
@@ -108,11 +116,11 @@ class DuckDBManager:
         )
 
     def _register_parquet_views(self, conn: DuckDBPyConnection) -> None:
-        """Register processed Parquet datasets as DuckDB views when files exist."""
+        """当 Parquet 文件存在时, 注册处理后数据集为 DuckDB 视图。"""
         for dataset in PARQUET_DATASETS:
             parquet_glob = self._processed_dir / dataset.folder_name / "**" / "*.parquet"
             if not list((self._processed_dir / dataset.folder_name).glob("**/*.parquet")):
-                logger.debug("Skipping missing Parquet dataset {}", dataset.folder_name)
+                logger.debug("跳过缺失的 Parquet 数据集 {}", dataset.folder_name)
                 continue
 
             conn.execute(
@@ -121,10 +129,10 @@ class DuckDBManager:
                 SELECT * FROM read_parquet('{_duckdb_path(parquet_glob)}', hive_partitioning=true)
                 """
             )
-            logger.info("Registered DuckDB view {}", dataset.view_name)
+            logger.info("已注册 DuckDB 视图 {}", dataset.view_name)
 
     def _create_derived_views(self, conn: DuckDBPyConnection) -> None:
-        """Create derived research views from registered source views."""
+        """基于已注册源视图创建衍生研究视图。"""
         if not (_relation_exists(conn, "v_daily_ohlcv") and _relation_exists(conn, "v_adj_factor")):
             return
 
@@ -154,11 +162,11 @@ class DuckDBManager:
              AND o.trade_date = a.trade_date
             """
         )
-        logger.info("Registered DuckDB view v_daily_adj")
+        logger.info("已注册 DuckDB 视图 v_daily_adj")
 
 
 def _relation_exists(conn: DuckDBPyConnection, relation_name: str) -> bool:
-    """Return whether a DuckDB table or view exists."""
+    """返回 DuckDB 表或视图是否存在。"""
     result = conn.execute(
         """
         SELECT COUNT(*)
@@ -171,5 +179,5 @@ def _relation_exists(conn: DuckDBPyConnection, relation_name: str) -> bool:
 
 
 def _duckdb_path(path: Path) -> str:
-    """Format a filesystem path for DuckDB SQL string literals."""
+    """将文件系统路径格式化为 DuckDB SQL 字符串字面量。"""
     return path.as_posix().replace("'", "''")

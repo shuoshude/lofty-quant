@@ -1,4 +1,4 @@
-"""Repository layer: the only public SQL query interface for research data."""
+"""Repository 层: 研究数据唯一公开 SQL 查询入口。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ DEFAULT_CROSS_SECTION_FIELDS = (
 
 
 class QuantRepository:
-    """Read-only query facade over DuckDB tables and registered views."""
+    """面向 DuckDB 表和已注册视图的只读查询门面。"""
 
     def __init__(self, conn: DuckDBPyConnection) -> None:
         self._conn = conn
@@ -36,7 +36,7 @@ class QuantRepository:
         *,
         adjusted: bool = True,
     ) -> list[dict[str, Any]]:
-        """Return daily bars ordered by security and trading date."""
+        """按证券和交易日排序返回日线行情。"""
         source = "v_daily_adj" if adjusted else "v_daily_ohlcv"
         return self._fetch_dicts(
             f"""
@@ -56,7 +56,7 @@ class QuantRepository:
         *,
         exclude_suspended: bool = False,
     ) -> list[dict[str, Any]]:
-        """Return a daily stock cross section with caller-selected columns."""
+        """按调用方选择的字段返回日度股票截面。"""
         selected_fields = ", ".join(_validate_fields(fields))
         suspended_filter = "AND is_suspended = FALSE" if exclude_suspended else ""
         return self._fetch_dicts(
@@ -77,9 +77,9 @@ class QuantRepository:
         *,
         factor_version: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return factor values for a date and one or more factor names."""
+        """返回某交易日一个或多个因子的取值。"""
         if not factor_names:
-            raise ValueError("factor_names cannot be empty")
+            raise ValueError("factor_names 不能为空")
 
         placeholders = ", ".join("?" for _ in factor_names)
         params: list[Any] = [trade_date, *factor_names]
@@ -107,7 +107,7 @@ class QuantRepository:
         *,
         exchange: str = "SSE",
     ) -> list[dict[str, Any]]:
-        """Return trading calendar rows ordered by calendar date."""
+        """按日历日期排序返回交易日历记录。"""
         return self._fetch_dicts(
             """
             SELECT exchange, cal_date, is_open, pretrade_date
@@ -120,18 +120,18 @@ class QuantRepository:
         )
 
     def _fetch_dicts(self, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
-        """Execute a query and return rows as dictionaries."""
+        """执行查询并以字典列表返回结果。"""
         result = self._conn.execute(query, params)
         columns = [column[0] for column in result.description]
         return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
 
 
 def _validate_fields(fields: Sequence[str]) -> list[str]:
-    """Validate SQL identifiers used for selected cross-section columns."""
+    """校验截面字段中的 SQL 标识符。"""
     if not fields:
-        raise ValueError("fields cannot be empty")
+        raise ValueError("fields 不能为空")
 
     invalid = [field for field in fields if not IDENTIFIER_PATTERN.fullmatch(field)]
     if invalid:
-        raise ValueError(f"invalid field names: {invalid}")
+        raise ValueError(f"无效的字段名: {invalid}")
     return list(fields)

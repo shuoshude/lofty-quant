@@ -21,7 +21,7 @@ def test_daily_ohlcv_rejects_invalid_ts_code() -> None:
 
 
 def test_daily_ohlcv_rejects_invalid_price_and_trading_state() -> None:
-    with pytest.raises(ValidationError, match="high cannot be lower than low"):
+    with pytest.raises(ValidationError, match="high 不能低于 low"):
         DailyOHLCVRecord(
             ts_code="000001.SZ",
             trade_date=date(2024, 1, 2),

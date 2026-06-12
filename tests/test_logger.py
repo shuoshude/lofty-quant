@@ -13,7 +13,7 @@ def test_setup_logger_writes_to_configured_log_directory(tmp_path: Path) -> None
     config = load_config(config_dir=config_dir)
 
     setup_logger(config=config, enable_console=False)
-    logger.info("hello logging")
+    logger.info("日志写入测试")
     logger.complete()
 
     log_files = list((tmp_path / "runtime-logs").glob("lofty-quant_*.log"))
@@ -22,7 +22,28 @@ def test_setup_logger_writes_to_configured_log_directory(tmp_path: Path) -> None
     content = log_files[0].read_text(encoding="utf-8")
     assert "INFO" in content
     assert "test_setup_logger_writes_to_configured_log_directory" in content
-    assert "hello logging" in content
+    assert "日志写入测试" in content
+
+
+def test_setup_logger_writes_etl_records_to_dedicated_log(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    write_settings(config_dir / "settings.toml", tmp_path / "runtime-logs")
+    config = load_config(config_dir=config_dir)
+
+    setup_logger(config=config, enable_console=False)
+    logger.info("通用日志测试")
+    logger.bind(module="etl").info("ETL 日志测试")
+    logger.complete()
+
+    etl_log_files = list((tmp_path / "runtime-logs").glob("etl_*.log"))
+
+    assert len(etl_log_files) == 1
+    content = etl_log_files[0].read_text(encoding="utf-8")
+    assert "INFO" in content
+    assert "test_setup_logger_writes_etl_records_to_dedicated_log" in content
+    assert "ETL 日志测试" in content
+    assert "通用日志测试" not in content
 
 
 def test_log_format_includes_timestamp_level_location_and_message() -> None:

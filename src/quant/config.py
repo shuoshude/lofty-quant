@@ -1,4 +1,4 @@
-"""Central project configuration loading."""
+"""项目配置统一加载入口。"""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -16,7 +16,7 @@ TOP_LEVEL_SECTIONS = ("project", "paths", "market", "trading", "backtest")
 
 
 class ProjectConfig(BaseModel):
-    """Project metadata."""
+    """项目元信息。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -25,7 +25,7 @@ class ProjectConfig(BaseModel):
 
 
 class PathsConfig(BaseModel):
-    """Filesystem paths used by the project."""
+    """项目使用的文件系统路径。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -37,13 +37,13 @@ class PathsConfig(BaseModel):
 
     @classmethod
     def from_raw(cls, raw: Mapping[str, Any], base_dir: Path) -> Self:
-        """Create path config and resolve relative paths from the project root."""
+        """创建路径配置, 并按项目根目录解析相对路径。"""
         resolved = {key: _resolve_path(Path(value), base_dir) for key, value in raw.items()}
         return cls.model_validate(resolved)
 
 
 class MarketConfig(BaseModel):
-    """A-share market conventions."""
+    """A 股市场约定。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -52,17 +52,17 @@ class MarketConfig(BaseModel):
     @field_validator("code_suffixes")
     @classmethod
     def validate_code_suffixes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        """Ensure stock code suffixes use the expected exchange style."""
+        """校验证券代码后缀是否符合交易所格式。"""
         if not value:
-            raise ValueError("code_suffixes cannot be empty")
+            raise ValueError("code_suffixes 不能为空")
         invalid = [suffix for suffix in value if not suffix.startswith(".")]
         if invalid:
-            raise ValueError(f"invalid code suffixes: {invalid}")
+            raise ValueError(f"无效的代码后缀: {invalid}")
         return value
 
 
 class TradingConfig(BaseModel):
-    """Trading fee assumptions."""
+    """交易费用假设。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -73,7 +73,7 @@ class TradingConfig(BaseModel):
 
 
 class BacktestConfig(BaseModel):
-    """Backtest defaults."""
+    """回测默认参数。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -82,7 +82,7 @@ class BacktestConfig(BaseModel):
 
 
 class SecretsConfig(BaseModel):
-    """Secret values loaded from environment variables."""
+    """从环境变量读取的机密配置。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -91,7 +91,7 @@ class SecretsConfig(BaseModel):
 
 
 class QuantConfig(BaseModel):
-    """Top-level project configuration."""
+    """项目顶层配置。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -104,9 +104,9 @@ class QuantConfig(BaseModel):
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any], base_dir: Path) -> Self:
-        """Build config from merged TOML settings and secret environment variables."""
+        """根据合并后的 TOML 配置和环境变量机密构建配置对象。"""
         if "paths" not in raw or not isinstance(raw["paths"], Mapping):
-            raise ValueError("config must contain a paths mapping")
+            raise ValueError("配置必须包含 paths 映射")
 
         data = dict(raw)
         data["paths"] = PathsConfig.from_raw(raw["paths"], base_dir)
@@ -118,7 +118,7 @@ def load_config(
     config_dir: Path | str | None = None,
     environment: str | None = None,
 ) -> QuantConfig:
-    """Load layered TOML config and validate the resulting settings object."""
+    """加载多层 TOML 配置并校验最终配置对象。"""
     project_root = get_project_root()
     settings_dir = _resolve_settings_dir(config_dir, project_root)
     settings_files = _settings_files(settings_dir, environment)
@@ -129,24 +129,24 @@ def load_config(
     try:
         return QuantConfig.from_mapping(raw, project_root)
     except ValidationError as exc:
-        raise ValueError(f"invalid config from settings files: {settings_files}") from exc
+        raise ValueError(f"配置文件无效: {settings_files}") from exc
 
 
 # 获取项目根目录
 def get_project_root(start: Path | None = None) -> Path:
-    """Find the repository root by walking upward until pyproject.toml is found."""
+    """向上查找包含 pyproject.toml 的项目根目录。"""
     current = (start or Path.cwd()).expanduser().resolve()
     for candidate in (current, *current.parents):
         if (candidate / "pyproject.toml").exists():
             return candidate
-    raise FileNotFoundError("could not find project root containing pyproject.toml")
+    raise FileNotFoundError("无法找到包含 pyproject.toml 的项目根目录")
 
 
 def _load_settings_files(settings_files: list[Path]) -> dict[str, Any]:
-    """Load TOML settings files with later files overriding earlier ones."""
+    """按顺序加载 TOML 配置文件, 后面的文件覆盖前面的文件。"""
     existing_files = [path for path in settings_files if path.exists()]
     if not existing_files:
-        raise FileNotFoundError(f"no settings files found: {settings_files}")
+        raise FileNotFoundError(f"未找到配置文件: {settings_files}")
 
     settings = Dynaconf(
         environments=False,
@@ -165,7 +165,7 @@ def _load_settings_files(settings_files: list[Path]) -> dict[str, Any]:
 
 
 def _settings_files(settings_dir: Path, environment: str | None) -> list[Path]:
-    """Return settings files in override order."""
+    """按覆盖顺序返回配置文件列表。"""
     selected_environment = environment or _read_environment_name()
     files = [settings_dir / DEFAULT_SETTINGS_FILE]
     if selected_environment and selected_environment != "default":
@@ -175,14 +175,14 @@ def _settings_files(settings_dir: Path, environment: str | None) -> list[Path]:
 
 
 def _read_environment_name() -> str:
-    """Read the optional config environment selector."""
+    """读取可选的配置环境名称。"""
     import os
 
     return os.getenv(ENVIRONMENT_VARIABLE, "default").strip().lower()
 
 
 def _load_secret_environment() -> dict[str, str]:
-    """Load secret environment variables under the project prefix."""
+    """加载项目前缀下的机密环境变量。"""
     import os
 
     secrets: dict[str, str] = {}
@@ -195,7 +195,7 @@ def _load_secret_environment() -> dict[str, str]:
 
 
 def _resolve_settings_dir(config_dir: Path | str | None, project_root: Path) -> Path:
-    """Resolve the settings directory."""
+    """解析配置目录。"""
     if config_dir is None:
         return project_root / CONFIG_DIR
 
@@ -206,7 +206,7 @@ def _resolve_settings_dir(config_dir: Path | str | None, project_root: Path) -> 
 
 
 def _resolve_path(path: Path, base_dir: Path) -> Path:
-    """Resolve a path relative to the project root."""
+    """按项目根目录解析路径。"""
     expanded = path.expanduser()
     if expanded.is_absolute():
         return expanded.resolve()

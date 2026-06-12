@@ -118,12 +118,12 @@ commission_rate = -0.1
 """,
     )
 
-    with pytest.raises(ValueError, match="invalid config"):
+    with pytest.raises(ValueError, match="配置文件无效"):
         load_config(config_dir=tmp_path)
 
 
 def test_load_config_rejects_missing_settings_dir(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="no settings files"):
+    with pytest.raises(FileNotFoundError, match="未找到配置文件"):
         load_config(config_dir=tmp_path)
 
 
