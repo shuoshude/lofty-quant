@@ -278,19 +278,20 @@ uv run python scripts/run_etl.py status daily-ohlcv \
 - `backfill`：历史回填，必须显式传入日期范围，按 `fetch -> load` 执行。
 - `status`：查看 `etl_manifest` 中的简单加载记录。
 
-raw 路径约定：
+raw 层约定使用数据源接口返回的 `pandas.DataFrame` 原样保存为 CSV：
 
 ```text
-data/raw/{source}/{dataset}/year=YYYY/month=MM/*.jsonl
+data/raw/tushare/trade-calendar/trade-calendar_tushare.csv
+data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240101_20240131.csv
 ```
 
-当前还没有接入真实数据源。遇到未实现的数据集时, CLI 会返回中文错误：
+交易日历这类小维表使用单文件 raw；日线行情这类持续增长的数据集按年月分区。遇到未实现的数据集时, CLI 会返回中文错误：
 
 ```text
 暂未实现数据集: dataset=..., source=...
 ```
 
-下一步建议先实现一个真实数据集, 例如 `trade-calendar + tushare`, 跑通后再根据真实需要恢复 `sync` 或跨源校验。
+当前优先跑通 `trade-calendar + tushare` 的最小链路, 后续再根据真实需要恢复 `sync` 或跨源校验。
 
 ## 常用命令
 

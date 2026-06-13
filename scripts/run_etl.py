@@ -40,7 +40,7 @@ def fetch(
     config = _setup_runtime(config_dir, environment, log_level)
     task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
     try:
-        output_path = fetch_raw_data(config.paths.raw_dir, task)
+        output_path = fetch_raw_data(config, task)
     except NotImplementedError as exc:
         raise typer.BadParameter(str(exc)) from exc
     logger.bind(module="etl").info("原始数据落盘完成: {}", output_path)
@@ -61,10 +61,10 @@ def load_command(
     log_level: LogLevelOption = "INFO",
 ) -> None:
     """从 raw 读取、清洗转换后写入目标存储。"""
-    _setup_runtime(config_dir, environment, log_level)
+    config = _setup_runtime(config_dir, environment, log_level)
     task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
     try:
-        row_count = load_raw_data(task)
+        row_count = load_raw_data(config, task)
     except NotImplementedError as exc:
         raise typer.BadParameter(str(exc)) from exc
     logger.bind(module="etl").info("目标存储加载完成: 行数={}", row_count)
@@ -88,8 +88,8 @@ def backfill(
     config = _setup_runtime(config_dir, environment, log_level)
     task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
     try:
-        output_path = fetch_raw_data(config.paths.raw_dir, task)
-        row_count = load_raw_data(task)
+        output_path = fetch_raw_data(config, task)
+        row_count = load_raw_data(config, task)
     except NotImplementedError as exc:
         raise typer.BadParameter(str(exc)) from exc
     logger.bind(module="etl").info("历史回填完成: raw={}, 行数={}", output_path, row_count)

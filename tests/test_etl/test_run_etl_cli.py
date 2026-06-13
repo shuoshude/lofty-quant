@@ -16,9 +16,9 @@ def test_fetch_command_calls_fetch_function(monkeypatch, tmp_path: Path) -> None
     calls: list[str] = []
     patch_runtime(monkeypatch, run_etl, tmp_path)
 
-    def fake_fetch(raw_dir, task):
-        calls.append(f"fetch:{raw_dir.name}:{task.dataset}:{task.source}")
-        return raw_dir / "raw.jsonl"
+    def fake_fetch(config, task):
+        calls.append(f"fetch:{config.paths.raw_dir.name}:{task.dataset}:{task.source}")
+        return config.paths.raw_dir / "raw.csv"
 
     monkeypatch.setattr(run_etl, "fetch_raw_data", fake_fetch)
 
@@ -45,8 +45,8 @@ def test_load_command_calls_load_function(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     patch_runtime(monkeypatch, run_etl, tmp_path)
 
-    def fake_load(task):
-        calls.append(f"load:{task.dataset}:{task.source}")
+    def fake_load(config, task):
+        calls.append(f"load:{config.paths.raw_dir.name}:{task.dataset}:{task.source}")
         return 3
 
     monkeypatch.setattr(run_etl, "load_raw_data", fake_load)
@@ -66,7 +66,7 @@ def test_load_command_calls_load_function(monkeypatch, tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert calls == ["load:trade-calendar:tushare"]
+    assert calls == ["load:raw:trade-calendar:tushare"]
 
 
 def test_backfill_command_calls_fetch_then_load(monkeypatch, tmp_path: Path) -> None:
@@ -74,11 +74,11 @@ def test_backfill_command_calls_fetch_then_load(monkeypatch, tmp_path: Path) -> 
     calls: list[str] = []
     patch_runtime(monkeypatch, run_etl, tmp_path)
 
-    def fake_fetch(raw_dir, task):
+    def fake_fetch(config, task):
         calls.append("fetch")
-        return raw_dir / "raw.jsonl"
+        return config.paths.raw_dir / "raw.csv"
 
-    def fake_load(task):
+    def fake_load(config, task):
         calls.append("load")
         return 2
 
@@ -113,7 +113,7 @@ def test_unimplemented_dataset_returns_chinese_error(tmp_path: Path) -> None:
             "fetch",
             "trade-calendar",
             "--source",
-            "tushare",
+            "unknown",
             "--start-date",
             "20240101",
             "--end-date",
@@ -124,7 +124,7 @@ def test_unimplemented_dataset_returns_chinese_error(tmp_path: Path) -> None:
     )
 
     assert result.exit_code != 0
-    assert "暂未实现数据集: dataset=trade-calendar, source=tushare" in result.output
+    assert "暂未实现数据集: dataset=trade-calendar, source=unknown" in result.output
 
 
 def test_status_command_reads_manifest(monkeypatch, tmp_path: Path) -> None:

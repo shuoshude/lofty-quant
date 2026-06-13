@@ -1,10 +1,14 @@
-from dataclasses import dataclass
+"""ETL 任务模型。"""
+
 from datetime import date
 
+from pydantic import BaseModel, ConfigDict
 
-@dataclass(frozen=True)
-class ETLTask:
+
+class ETLTask(BaseModel):
     """一次 ETL 任务的最小描述。"""
+
+    model_config = ConfigDict(frozen=True)
 
     dataset: str
     source: str

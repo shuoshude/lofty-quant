@@ -1,29 +1,32 @@
-"""ETL 原始数据拉取和 raw 落盘工具。"""
+"""ETL 原始数据拉取和 raw CSV 落盘工具。"""
 
 from __future__ import annotations
 
-import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
-from typing import Any
-from .sources.tushare_source import TushareClient
-from .etl_model import ETLTask
 
+import pandas as pd
+from loguru import logger
+from pandas import DataFrame
 
-RawRecord = Mapping[str, Any]
+from quant.config import QuantConfig
+from quant.etl.etl_model import ETLTask
+from quant.etl.sources.tushare_source import TushareClient
+
+SINGLE_FILE_DATASETS = {"trade-calendar"}
 
 
 def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> Path:
     """生成 raw 文件路径。"""
     normalized_suffix = suffix.lstrip(".")
-    partition_dir = (
-        raw_dir.expanduser().resolve()
-        / task.source
-        / task.dataset
-        / f"year={task.start_date:%Y}"
-        / f"month={task.start_date:%m}"
-    )
+    base_dir = raw_dir.expanduser().resolve() / task.source / task.dataset
+
+    if _is_single_file_dataset(task):
+        filename = f"{task.dataset}_{task.source}.{normalized_suffix}"
+        return base_dir / filename
+
+    partition_dir = base_dir / f"year={task.start_date:%Y}" / f"month={task.start_date:%m}"
     filename = (
         f"{task.dataset}_{task.source}_{task.start_date:%Y%m%d}_"
         f"{task.end_date:%Y%m%d}.{normalized_suffix}"
@@ -31,35 +34,24 @@ def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> Path
     return partition_dir / filename
 
 
-def write_jsonl(path: Path, records: Iterable[RawRecord]) -> int:
-    """将原始记录写入 JSONL 文件并返回行数。"""
+def write_raw_csv(path: Path, df: DataFrame) -> int:
+    """将 DataFrame 写入 raw CSV 并返回行数。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    row_count = 0
-    with path.open("w", encoding="utf-8") as file:
-        for record in records:
-            file.write(json.dumps(dict(record), ensure_ascii=False, default=str))
-            file.write("\n")
-            row_count += 1
-    return row_count
+    df.to_csv(path, index=False, encoding="utf-8")
+    return len(df.index)
 
 
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """读取 JSONL 原始记录。"""
-    records: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
-            content = line.strip()
-            if not content:
-                continue
-            loaded = json.loads(content)
-            if not isinstance(loaded, dict):
-                raise ValueError(f"JSONL 第 {line_number} 行不是对象: {path}")
-            records.append(loaded)
-    return records
+def read_raw_csv(path: Path) -> DataFrame:
+    """读取 raw CSV 为 DataFrame。"""
+    return pd.read_csv(path, encoding="utf-8", dtype=str, keep_default_na=False)
 
 
 def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> list[Path]:
-    """按年月分区查找日期范围内可能相关的 raw 文件。"""
+    """查找任务范围内可能相关的 raw CSV 文件。"""
+    if _is_single_file_dataset(task):
+        path = build_raw_path(raw_dir, task, suffix=suffix)
+        return [path] if path.is_file() else []
+
     files: list[Path] = []
     pattern = f"*.{suffix.lstrip('.')}"
     for partition_date in _iter_months(task.start_date, task.end_date):
@@ -75,16 +67,30 @@ def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> list
     return sorted(path for path in files if path.is_file())
 
 
-def fetch_raw_data(raw_dir: Path, task: ETLTask):
-    """根据 (source, dataset) 分发到具体数据源实现。"""
+def fetch_raw_data(config: QuantConfig, task: ETLTask) -> Path:
+    """根据 (source, dataset) 拉取 DataFrame 并写入 raw CSV。"""
     if task.source == "tushare":
-        t_client = TushareClient()
-        df = t_client.fetch_tushare_raw(raw_dir, task)
-        path = build_raw_path(raw_dir, task)
-        print(df)
-        print(path)
+        df = TushareClient(config).fetch_tushare_raw(task)
     else:
         raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
+
+    path = build_raw_path(config.paths.raw_dir, task)
+    if task.dry_run:
+        logger.bind(module="etl").info(
+            "试运行: 跳过 raw CSV 写入, 行数={}, 路径={}",
+            len(df.index),
+            path,
+        )
+        return path
+
+    row_count = write_raw_csv(path, df)
+    logger.bind(module="etl").info("raw CSV 写入完成: 路径={}, 行数={}", path, row_count)
+    return path
+
+
+def _is_single_file_dataset(task: ETLTask) -> bool:
+    """判断数据集 raw 是否使用单文件布局。"""
+    return task.dataset in SINGLE_FILE_DATASETS
 
 
 def _iter_months(start_date: date, end_date: date) -> Iterable[date]:

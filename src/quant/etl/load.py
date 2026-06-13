@@ -5,24 +5,69 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
+from math import isnan
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import polars as pl
 from duckdb import DuckDBPyConnection
 from pydantic import BaseModel
 
-from quant.etl import ETLTask
+from quant.config import QuantConfig
+from quant.data.db import DuckDBManager
+from quant.data.schemas import TradeCalendarRecord
+from quant.etl.etl_model import ETLTask
+from quant.etl.fetch import find_raw_files, read_raw_csv
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def load_raw_data(task: ETLTask) -> int:
-    """执行 raw 到目标存储加载。
-
-    当前还没有接入真实数据集, 这里保留统一入口并给出明确错误。
-    """
+def load_raw_data(config: QuantConfig, task: ETLTask) -> int:
+    """执行 raw CSV 到目标存储加载。"""
+    if task.dataset == "trade-calendar":
+        return load_trade_calendar(config, task)
     raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
+
+
+def load_trade_calendar(config: QuantConfig, task: ETLTask) -> int:
+    """读取交易日历 raw CSV, 校验后写入 DuckDB 维表。"""
+    raw_files = find_raw_files(config.paths.raw_dir, task)
+    if not raw_files:
+        raise FileNotFoundError(
+            f"未找到 raw CSV 文件: dataset={task.dataset}, source={task.source}"
+        )
+
+    raw_df = _read_csv_files(raw_files)
+    records = _normalize_trade_calendar_records(raw_df, task)
+
+    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+    manager.initialize()
+    with manager.session() as conn:
+        if task.exchange:
+            delete_where = "exchange = ? AND cal_date BETWEEN ? AND ?"
+            delete_params: Sequence[Any] = [task.exchange.upper(), task.start_date, task.end_date]
+        else:
+            delete_where = "cal_date BETWEEN ? AND ?"
+            delete_params = [task.start_date, task.end_date]
+
+        row_count = replace_duckdb_records(
+            conn,
+            table="dim_trade_calendar",
+            records=records,
+            columns=["exchange", "cal_date", "is_open", "pretrade_date"],
+            delete_where=delete_where,
+            delete_params=delete_params,
+        )
+        write_manifest(
+            conn,
+            dataset=task.dataset,
+            trade_date=task.end_date,
+            source=task.source,
+            version="default",
+            row_count=row_count,
+        )
+    return row_count
 
 
 def write_processed_parquet(
@@ -163,3 +208,92 @@ def _validate_identifier(value: str) -> None:
     """校验 SQL 标识符, 避免动态 SQL 注入。"""
     if not IDENTIFIER_PATTERN.fullmatch(value):
         raise ValueError(f"无效的 SQL 标识符: {value}")
+
+
+def _read_csv_files(paths: Sequence[Path]) -> pd.DataFrame:
+    """读取一个或多个 raw CSV 文件。"""
+    frames = [read_raw_csv(path) for path in paths]
+    if len(frames) == 1:
+        return frames[0]
+    return pd.concat(frames, ignore_index=True)
+
+
+def _normalize_trade_calendar_records(df: pd.DataFrame, task: ETLTask) -> list[TradeCalendarRecord]:
+    """将交易日历 raw DataFrame 转为项目数据契约。"""
+    records: list[TradeCalendarRecord] = []
+    for row in df.to_dict(orient="records"):
+        cal_date = _parse_required_date(row.get("cal_date"), field_name="cal_date")
+        pretrade_date = _parse_optional_date(row.get("pretrade_date"), field_name="pretrade_date")
+        record = TradeCalendarRecord(
+            exchange=_normalize_exchange(row.get("exchange"), task),
+            cal_date=cal_date,
+            is_open=_parse_bool(row.get("is_open"), field_name="is_open"),
+            pretrade_date=pretrade_date,
+        )
+        records.append(record)
+    return records
+
+
+def _normalize_exchange(value: object, task: ETLTask) -> str:
+    """标准化交易所代码。"""
+    if value is not None and not _is_missing(value):
+        exchange = str(value).strip()
+    else:
+        exchange = task.exchange or "SSE"
+    return exchange.upper()
+
+
+def _parse_required_date(value: object, *, field_name: str) -> date:
+    """解析必填日期字段。"""
+    parsed = _parse_optional_date(value, field_name=field_name)
+    if parsed is None:
+        raise ValueError(f"{field_name} 不能为空")
+    return parsed
+
+
+def _parse_optional_date(value: object, *, field_name: str) -> date | None:
+    """解析可选日期字段。"""
+    if _is_missing(value):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(int(value)) if isinstance(value, int | float) else str(value).strip()
+    if not text:
+        return None
+
+    for pattern in ("%Y%m%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, pattern).date()
+        except ValueError:
+            continue
+    raise ValueError(f"日期字段 {field_name} 格式无效: {value}")
+
+
+def _parse_bool(value: object, *, field_name: str) -> bool:
+    """解析布尔字段。"""
+    if _is_missing(value):
+        raise ValueError(f"{field_name} 不能为空")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return int(value) == 1
+
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "open", "开市", "是"}:
+        return True
+    if text in {"0", "false", "no", "n", "close", "closed", "休市", "否"}:
+        return False
+    raise ValueError(f"布尔字段 {field_name} 格式无效: {value}")
+
+
+def _is_missing(value: object) -> bool:
+    """判断 DataFrame 单元格是否为空。"""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"", "nan", "nat", "none", "<na>"}
+    if isinstance(value, float):
+        return isnan(value)
+    return False
