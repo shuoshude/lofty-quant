@@ -12,7 +12,7 @@ import polars as pl
 from duckdb import DuckDBPyConnection
 from pydantic import BaseModel
 
-from quant.etl.fetch import ETLTask
+from quant.etl import ETLTask
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

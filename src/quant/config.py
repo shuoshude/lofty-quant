@@ -97,6 +97,7 @@ class SecretsSettings(BaseSettings):
     """从环境变量读取 secrets 的 settings 模型。"""
 
     model_config = SettingsConfigDict(
+        env_file=".env",
         env_prefix=SECRETS_ENV_PREFIX,
         case_sensitive=False,
         env_ignore_empty=True,

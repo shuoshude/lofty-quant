@@ -4,29 +4,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
-
-
-@dataclass(frozen=True)
-class ETLTask:
-    """一次 ETL 任务的最小描述。"""
-
-    dataset: str
-    source: str
-    start_date: date
-    end_date: date
-    exchange: str | None = None
-    force: bool = False
-    dry_run: bool = False
+from .sources.tushare_source import TushareClient
+from .etl_model import ETLTask
 
 
 RawRecord = Mapping[str, Any]
 
 
-def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "jsonl") -> Path:
+def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> Path:
     """生成 raw 文件路径。"""
     normalized_suffix = suffix.lstrip(".")
     partition_dir = (
@@ -70,7 +58,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "jsonl") -> list[Path]:
+def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> list[Path]:
     """按年月分区查找日期范围内可能相关的 raw 文件。"""
     files: list[Path] = []
     pattern = f"*.{suffix.lstrip('.')}"
@@ -87,12 +75,16 @@ def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "jsonl") -> li
     return sorted(path for path in files if path.is_file())
 
 
-def fetch_raw_data(raw_dir: Path, task: ETLTask) -> Path:
-    """执行 raw 落盘。
-
-    当前还没有接入真实数据源, 这里保留统一入口并给出明确错误。
-    """
-    raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
+def fetch_raw_data(raw_dir: Path, task: ETLTask):
+    """根据 (source, dataset) 分发到具体数据源实现。"""
+    if task.source == "tushare":
+        t_client = TushareClient()
+        df = t_client.fetch_tushare_raw(raw_dir, task)
+        path = build_raw_path(raw_dir, task)
+        print(df)
+        print(path)
+    else:
+        raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
 
 def _iter_months(start_date: date, end_date: date) -> Iterable[date]:

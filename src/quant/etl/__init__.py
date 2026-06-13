@@ -1,13 +1,14 @@
 """轻量 ETL 工具导出。"""
 
 from quant.etl.fetch import (
-    ETLTask,
     build_raw_path,
     fetch_raw_data,
     find_raw_files,
     read_jsonl,
     write_jsonl,
 )
+from quant.etl.etl_model import ETLTask
+
 from quant.etl.load import (
     get_manifest_status,
     insert_duckdb_records,
