@@ -163,7 +163,7 @@ manager.initialize()
 
 - `dim_security`：股票主数据
 - `dim_trade_calendar`：交易日历
-- `etl_manifest`：ETL 加载记录
+- `etl_manifest`：兼容保留的旧 ETL 状态表, 当前业务流程不依赖它
 
 如果 `data/processed/` 下存在对应 Parquet 文件，还会自动注册视图：
 
@@ -274,9 +274,9 @@ uv run python scripts/run_etl.py status daily-ohlcv \
 生命周期约定：
 
 - `fetch`：只连接外部数据源，只写 `data/raw`，不写 DuckDB，不写 processed。
-- `load`：只读取 `data/raw`，清洗转换后写 DuckDB 或 processed，并写 `etl_manifest`。
+- `load`：只读取 `data/raw`，清洗转换后写 DuckDB 或 processed。
 - `backfill`：历史回填，必须显式传入日期范围，按 `fetch -> load` 执行。
-- `status`：查看 `etl_manifest` 中的简单加载记录。
+- `status`：直接从目标表或 processed 数据聚合当前真实状态。
 
 raw 层约定使用数据源接口返回的 `pandas.DataFrame` 原样保存为 CSV：
 

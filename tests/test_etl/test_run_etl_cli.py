@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-from datetime import date
 from pathlib import Path
 from types import ModuleType
 
@@ -127,18 +126,20 @@ def test_unimplemented_dataset_returns_chinese_error(tmp_path: Path) -> None:
     assert "暂未实现数据集: dataset=trade-calendar, source=unknown" in result.output
 
 
-def test_status_command_reads_manifest(monkeypatch, tmp_path: Path) -> None:
+def test_status_command_reads_trade_calendar_table(monkeypatch, tmp_path: Path) -> None:
     run_etl = load_run_etl_module()
     config_dir = make_config_dir(tmp_path)
 
-    def fake_status(conn, *, dataset, source=None):
+    def fake_status(conn):
         return {
-            "loaded_count": 1,
-            "latest_trade_date": date(2024, 1, 2),
-            "latest_loaded_at": None,
+            "exchange": "SSE",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "row_count": 31,
+            "open_count": 22,
         }
 
-    monkeypatch.setattr(run_etl, "get_manifest_status", fake_status)
+    monkeypatch.setattr(run_etl, "_get_trade_calendar_status", fake_status)
 
     result = CliRunner().invoke(
         run_etl.app,
@@ -153,8 +154,11 @@ def test_status_command_reads_manifest(monkeypatch, tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "加载记录数: 1" in result.output
-    assert "最新交易日: 2024-01-02" in result.output
+    assert "交易所: SSE" in result.output
+    assert "起始日期: 2024-01-01" in result.output
+    assert "结束日期: 2024-01-31" in result.output
+    assert "日历行数: 31" in result.output
+    assert "开市天数: 22" in result.output
 
 
 def patch_runtime(monkeypatch, run_etl: ModuleType, tmp_path: Path) -> None:

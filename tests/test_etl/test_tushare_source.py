@@ -14,7 +14,6 @@ from quant.etl.sources.tushare_source import (
     load_trade_calendar,
     normalize_trade_calendar_df,
 )
-from quant.etl.storage import get_manifest_status
 from quant.utils import build_raw_path
 
 
@@ -145,12 +144,9 @@ def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Pa
             """,
             ["SSE", date(2024, 1, 2)],
         ).fetchone()
-        status = get_manifest_status(conn, dataset="trade-calendar", source="tushare")
 
     assert row_count == 1
     assert calendar_row == ("SSE", date(2024, 1, 2), True, date(2023, 12, 29))
-    assert status["loaded_count"] == 1
-    assert status["latest_trade_date"] == date(2024, 1, 31)
 
 
 def make_config(tmp_path: Path, *, token: str | None) -> QuantConfig:

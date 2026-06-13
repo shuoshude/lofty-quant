@@ -198,12 +198,9 @@ def test_load_trade_calendar_from_raw_csv(tmp_path: Path) -> None:
             """,
             ["SSE", date(2024, 1, 2)],
         ).fetchone()
-        status = get_manifest_status(conn, dataset="trade-calendar", source="tushare")
 
     assert row_count == 1
     assert calendar_row == ("SSE", date(2024, 1, 2), True, date(2023, 12, 29))
-    assert status["loaded_count"] == 1
-    assert status["latest_trade_date"] == date(2024, 1, 31)
 
 
 def test_load_raw_data_rejects_unknown_source(tmp_path: Path) -> None:

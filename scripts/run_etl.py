@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Annotated
 
+import duckdb
 import typer
+from duckdb import DuckDBPyConnection
 from loguru import logger
 
 from quant.config import QuantConfig, load_config
 from quant.data.db import DuckDBManager
-from quant.etl import ETLTask, fetch_raw_data, get_manifest_status, load_raw_data
+from quant.etl import ETLTask, fetch_raw_data, load_raw_data
 from quant.logger import setup_logger
 
 app = typer.Typer(help="lofty-quant ETL 轻量入口")
@@ -104,20 +108,73 @@ def status(
     environment: EnvironmentOption = None,
     log_level: LogLevelOption = "INFO",
 ) -> None:
-    """查看简单加载状态。"""
+    """查看目标数据真实状态。"""
     config = _setup_runtime(config_dir, environment, log_level)
+    with _status_session(config) as conn:
+        if dataset == "trade-calendar":
+            state = _get_trade_calendar_status(conn)
+        else:
+            raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
+
+    typer.echo(f"数据集: {dataset}")
+    typer.echo(f"数据源: {source or '*'}")
+    typer.echo(f"交易所: {state['exchange']}")
+    typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
+    typer.echo(f"结束日期: {_format_optional_value(state['end_date'])}")
+    typer.echo(f"日历行数: {state['row_count']}")
+    typer.echo(f"开市天数: {state['open_count']}")
+
+
+@contextmanager
+def _status_session(config: QuantConfig) -> Generator[DuckDBPyConnection, None, None]:
+    """提供状态查询连接, 已存在的数据库使用只读模式。"""
+    if config.paths.database_path.exists():
+        conn = duckdb.connect(str(config.paths.database_path), read_only=True)
+        try:
+            yield conn
+        finally:
+            conn.close()
+        return
+
     manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
     manager.initialize()
     with manager.session() as conn:
-        state = get_manifest_status(conn, dataset=dataset, source=source)
+        yield conn
 
-    latest_trade_date = _format_optional_value(state["latest_trade_date"])
-    latest_loaded_at = _format_optional_value(state["latest_loaded_at"])
-    typer.echo(f"数据集: {dataset}")
-    typer.echo(f"数据源: {source or '*'}")
-    typer.echo(f"加载记录数: {state['loaded_count']}")
-    typer.echo(f"最新交易日: {latest_trade_date}")
-    typer.echo(f"最近加载时间: {latest_loaded_at}")
+
+def _get_trade_calendar_status(conn: DuckDBPyConnection) -> dict[str, object]:
+    """从交易日历目标表聚合真实状态。"""
+    row = conn.execute(
+        """
+        SELECT
+            COALESCE(exchange, '*') AS exchange,
+            MIN(cal_date) AS start_date,
+            MAX(cal_date) AS end_date,
+            COUNT(*) AS row_count,
+            SUM(CASE WHEN is_open THEN 1 ELSE 0 END) AS open_count
+        FROM dim_trade_calendar
+        GROUP BY exchange
+        ORDER BY exchange
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return {
+            "exchange": "-",
+            "start_date": None,
+            "end_date": None,
+            "row_count": 0,
+            "open_count": 0,
+        }
+
+    exchange, start_date, end_date, row_count, open_count = row
+    return {
+        "exchange": exchange,
+        "start_date": start_date,
+        "end_date": end_date,
+        "row_count": int(row_count),
+        "open_count": int(open_count or 0),
+    }
 
 
 def _setup_runtime(

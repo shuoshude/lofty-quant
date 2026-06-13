@@ -13,7 +13,7 @@ from quant.config import QuantConfig
 from quant.data.db import DuckDBManager
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import read_raw_csv
-from quant.etl.storage import replace_duckdb_dataframe, write_manifest
+from quant.etl.storage import replace_duckdb_dataframe
 from quant.utils import build_raw_path
 
 
@@ -77,14 +77,6 @@ def load_trade_calendar(config: QuantConfig, task: ETLTask) -> int:
             columns=["exchange", "cal_date", "is_open", "pretrade_date"],
             delete_where=delete_where,
             delete_params=delete_params,
-        )
-        write_manifest(
-            conn,
-            dataset=task.dataset,
-            trade_date=task.end_date,
-            source=task.source,
-            version="default",
-            row_count=row_count,
         )
     return row_count
 
