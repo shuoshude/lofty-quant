@@ -1,11 +1,14 @@
 """项目配置统一加载入口。"""
 
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
 
-from dynaconf import Dynaconf
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from quant.utils import get_project_root, resolve_path
 
 CONFIG_DIR = "config"
 DEFAULT_SETTINGS_FILE = "settings.toml"
@@ -38,7 +41,7 @@ class PathsConfig(BaseModel):
     @classmethod
     def from_raw(cls, raw: Mapping[str, Any], base_dir: Path) -> Self:
         """创建路径配置, 并按项目根目录解析相对路径。"""
-        resolved = {key: _resolve_path(Path(value), base_dir) for key, value in raw.items()}
+        resolved = {key: resolve_path(Path(value), base_dir) for key, value in raw.items()}
         return cls.model_validate(resolved)
 
 
@@ -90,6 +93,20 @@ class SecretsConfig(BaseModel):
     akshare_token: str | None = None
 
 
+class SecretsSettings(BaseSettings):
+    """从环境变量读取 secrets 的 settings 模型。"""
+
+    model_config = SettingsConfigDict(
+        env_prefix=SECRETS_ENV_PREFIX,
+        case_sensitive=False,
+        env_ignore_empty=True,
+        extra="ignore",
+    )
+
+    tushare_token: str | None = None
+    akshare_token: str | None = None
+
+
 class QuantConfig(BaseModel):
     """项目顶层配置。"""
 
@@ -124,22 +141,12 @@ def load_config(
     settings_files = _settings_files(settings_dir, environment)
 
     raw = _load_settings_files(settings_files)
-    raw["secrets"] = _load_secret_environment()
+    raw["secrets"] = _load_secret_environment().model_dump()
 
     try:
         return QuantConfig.from_mapping(raw, project_root)
     except ValidationError as exc:
         raise ValueError(f"配置文件无效: {settings_files}") from exc
-
-
-# 获取项目根目录
-def get_project_root(start: Path | None = None) -> Path:
-    """向上查找包含 pyproject.toml 的项目根目录。"""
-    current = (start or Path.cwd()).expanduser().resolve()
-    for candidate in (current, *current.parents):
-        if (candidate / "pyproject.toml").exists():
-            return candidate
-    raise FileNotFoundError("无法找到包含 pyproject.toml 的项目根目录")
 
 
 def _load_settings_files(settings_files: list[Path]) -> dict[str, Any]:
@@ -148,20 +155,26 @@ def _load_settings_files(settings_files: list[Path]) -> dict[str, Any]:
     if not existing_files:
         raise FileNotFoundError(f"未找到配置文件: {settings_files}")
 
-    settings = Dynaconf(
-        environments=False,
-        envvar_prefix=False,
-        load_dotenv=False,
-        settings_files=[str(path) for path in existing_files],
-        core_loaders=["TOML"],
-        merge_enabled=True,
-    )
-    data: dict[str, Any] = {}
-    for section in TOP_LEVEL_SECTIONS:
-        value = settings.get(section.upper())
-        if value is not None:
-            data[section] = dict(value) if isinstance(value, Mapping) else value
-    return data
+    merged: dict[str, Any] = {}
+    for path in existing_files:
+        _deep_merge(merged, _load_toml_file(path))
+    return {key: merged[key] for key in TOP_LEVEL_SECTIONS if key in merged}
+
+
+def _load_toml_file(path: Path) -> dict[str, Any]:
+    """读取单个 TOML 配置文件。"""
+    with path.open("rb") as file:
+        return tomllib.load(file)
+
+
+def _deep_merge(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    """递归合并配置映射, source 覆盖 target。"""
+    for key, value in source.items():
+        current = target.get(key)
+        if isinstance(current, dict) and isinstance(value, Mapping):
+            _deep_merge(current, value)
+            continue
+        target[key] = dict(value) if isinstance(value, Mapping) else value
 
 
 def _settings_files(settings_dir: Path, environment: str | None) -> list[Path]:
@@ -181,33 +194,11 @@ def _read_environment_name() -> str:
     return os.getenv(ENVIRONMENT_VARIABLE, "default").strip().lower()
 
 
-def _load_secret_environment() -> dict[str, str]:
+def _load_secret_environment() -> SecretsSettings:
     """加载项目前缀下的机密环境变量。"""
-    import os
-
-    secrets: dict[str, str] = {}
-    for key, value in os.environ.items():
-        if not key.startswith(SECRETS_ENV_PREFIX) or value == "":
-            continue
-        secret_key = key.removeprefix(SECRETS_ENV_PREFIX).lower()
-        secrets[secret_key] = value
-    return secrets
+    return SecretsSettings()
 
 
 def _resolve_settings_dir(config_dir: Path | str | None, project_root: Path) -> Path:
     """解析配置目录。"""
-    if config_dir is None:
-        return project_root / CONFIG_DIR
-
-    path = Path(config_dir).expanduser()
-    if path.is_absolute():
-        return path.resolve()
-    return (project_root / path).resolve()
-
-
-def _resolve_path(path: Path, base_dir: Path) -> Path:
-    """按项目根目录解析路径。"""
-    expanded = path.expanduser()
-    if expanded.is_absolute():
-        return expanded.resolve()
-    return (base_dir / expanded).resolve()
+    return resolve_path(config_dir or CONFIG_DIR, project_root)

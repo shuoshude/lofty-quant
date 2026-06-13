@@ -6,7 +6,7 @@
 
 - Python 3.12
 - uv
-- Dynaconf + Pydantic
+- tomllib + Pydantic Settings + Pydantic
 - Loguru
 - DuckDB / Parquet / Polars
 - pytest / ruff / mypy
@@ -54,7 +54,7 @@ uv run python main.py
 
 ## 配置
 
-配置使用 TOML 作为主格式，统一从 `quant.config.load_config()` 读取。普通配置放在文件里，机密只放环境变量。
+配置使用 TOML 作为主格式，统一从 `quant.config.load_config()` 读取。普通配置由标准库 `tomllib` 读取并递归合并，机密只通过 Pydantic Settings 从环境变量读取。
 
 加载顺序：
 

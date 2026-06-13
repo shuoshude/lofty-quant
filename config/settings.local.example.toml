@@ -1,5 +1,5 @@
-# Copy to config/settings.local.toml for machine-specific non-secret overrides.
-# This file is loaded last and overrides settings.toml and settings.<env>.toml.
+# 复制为 config/settings.local.toml 后, 可写入本机专属的非机密覆盖项。
+# 本文件最后加载, 会覆盖 settings.toml 和 settings.<env>.toml。
 
 [paths]
 # raw_dir = "/absolute/path/to/local/raw"

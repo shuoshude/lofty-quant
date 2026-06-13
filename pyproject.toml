@@ -25,7 +25,7 @@ dependencies = [
     "loguru>=0.7",          # 替代标准 logging
     "rich>=13.0",           # 终端美化输出
     "typer>=0.12",          # CLI 脚本框架
-    "dynaconf>=3.2.13",
+    "pydantic-settings>=2.14.1",
 ]
 
 [project.optional-dependencies]

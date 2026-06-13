@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from quant.config import get_project_root, load_config
+from quant.config import load_config
+from quant.utils import get_project_root
 
 
 def test_load_default_config_resolves_paths() -> None:
