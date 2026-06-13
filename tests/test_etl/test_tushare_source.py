@@ -5,9 +5,17 @@ import pandas as pd
 import pytest
 
 from quant.config import PathsConfig, ProjectConfig, QuantConfig, SecretsConfig
+from quant.data.db import DuckDBManager
 from quant.etl import ETLTask
+from quant.etl.fetch import write_raw_csv
 from quant.etl.sources import tushare_source
-from quant.etl.sources.tushare_source import TushareClient
+from quant.etl.sources.tushare_source import (
+    TushareClient,
+    load_trade_calendar,
+    normalize_trade_calendar_df,
+)
+from quant.etl.storage import get_manifest_status
+from quant.utils import build_raw_path
 
 
 def test_tushare_source_returns_dataframe(monkeypatch, tmp_path: Path) -> None:
@@ -45,6 +53,104 @@ def test_tushare_source_returns_dataframe(monkeypatch, tmp_path: Path) -> None:
 def test_tushare_source_requires_token(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="请在环境变量中设置 LOFTY_QUANT__SECRETS__TUSHARE_TOKEN"):
         TushareClient(make_config(tmp_path, token=None))
+
+
+def test_normalize_trade_calendar_df_vectorizes_raw_dataframe() -> None:
+    task = ETLTask(
+        dataset="trade-calendar",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 31),
+        exchange="SSE",
+    )
+    raw_df = pd.DataFrame(
+        [
+            {"exchange": "", "cal_date": "20240102", "is_open": "1", "pretrade_date": ""},
+            {
+                "exchange": "szse",
+                "cal_date": "20240103",
+                "is_open": "0",
+                "pretrade_date": "20240102",
+            },
+        ]
+    )
+
+    normalized = normalize_trade_calendar_df(raw_df, task)
+
+    assert list(normalized.columns) == ["exchange", "cal_date", "is_open", "pretrade_date"]
+    assert normalized.to_dict(orient="records") == [
+        {
+            "exchange": "SSE",
+            "cal_date": date(2024, 1, 2),
+            "is_open": True,
+            "pretrade_date": None,
+        },
+        {
+            "exchange": "SZSE",
+            "cal_date": date(2024, 1, 3),
+            "is_open": False,
+            "pretrade_date": date(2024, 1, 2),
+        },
+    ]
+
+
+def test_normalize_trade_calendar_df_rejects_invalid_date() -> None:
+    task = ETLTask(
+        dataset="trade-calendar",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 31),
+    )
+
+    with pytest.raises(ValueError, match="日期字段 cal_date 格式无效"):
+        normalize_trade_calendar_df(
+            pd.DataFrame([{"cal_date": "invalid", "is_open": "1"}]),
+            task,
+        )
+
+
+def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Path) -> None:
+    config = make_config(tmp_path, token=None)
+    task = ETLTask(
+        dataset="trade-calendar",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 31),
+        exchange="SSE",
+    )
+    raw_path = build_raw_path(config.paths.raw_dir, task)
+    write_raw_csv(
+        raw_path,
+        pd.DataFrame(
+            [
+                {
+                    "exchange": "SSE",
+                    "cal_date": "20240102",
+                    "is_open": "1",
+                    "pretrade_date": "20231229",
+                }
+            ]
+        ),
+    )
+
+    row_count = load_trade_calendar(config, task)
+
+    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+    with manager.session() as conn:
+        calendar_row = conn.execute(
+            """
+            SELECT exchange, cal_date, is_open, pretrade_date
+            FROM dim_trade_calendar
+            WHERE exchange = ? AND cal_date = ?
+            """,
+            ["SSE", date(2024, 1, 2)],
+        ).fetchone()
+        status = get_manifest_status(conn, dataset="trade-calendar", source="tushare")
+
+    assert row_count == 1
+    assert calendar_row == ("SSE", date(2024, 1, 2), True, date(2023, 12, 29))
+    assert status["loaded_count"] == 1
+    assert status["latest_trade_date"] == date(2024, 1, 31)
 
 
 def make_config(tmp_path: Path, *, token: str | None) -> QuantConfig:

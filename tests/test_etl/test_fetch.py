@@ -6,12 +6,12 @@ import pandas as pd
 from quant.config import load_config
 from quant.etl import ETLTask
 from quant.etl.fetch import (
-    build_raw_path,
     fetch_raw_data,
     find_raw_files,
     read_raw_csv,
     write_raw_csv,
 )
+from quant.utils import build_raw_path
 
 
 def test_raw_csv_roundtrip(tmp_path: Path) -> None:
@@ -76,14 +76,10 @@ def test_fetch_raw_data_uses_config_raw_dir(monkeypatch, tmp_path: Path) -> None
         exchange="SSE",
     )
 
-    class FakeTushareClient:
-        def __init__(self, _config):
-            pass
+    def fake_fetch_tushare_raw(_config, _task):
+        return pd.DataFrame([{"cal_date": "20240102", "is_open": 1}])
 
-        def fetch_tushare_raw(self, _task):
-            return pd.DataFrame([{"cal_date": "20240102", "is_open": 1}])
-
-    monkeypatch.setattr("quant.etl.fetch.TushareClient", FakeTushareClient)
+    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
 
     path = fetch_raw_data(config, task)
 

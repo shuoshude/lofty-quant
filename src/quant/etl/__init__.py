@@ -2,20 +2,21 @@
 
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import (
-    build_raw_path,
     fetch_raw_data,
     find_raw_files,
     read_raw_csv,
     write_raw_csv,
 )
-from quant.etl.load import (
+from quant.etl.load import load_raw_data
+from quant.etl.storage import (
     get_manifest_status,
     insert_duckdb_records,
-    load_raw_data,
+    replace_duckdb_dataframe,
     replace_duckdb_records,
     write_manifest,
     write_processed_parquet,
 )
+from quant.utils import build_raw_path
 
 __all__ = [
     "ETLTask",
@@ -26,6 +27,7 @@ __all__ = [
     "insert_duckdb_records",
     "load_raw_data",
     "read_raw_csv",
+    "replace_duckdb_dataframe",
     "replace_duckdb_records",
     "write_manifest",
     "write_processed_parquet",

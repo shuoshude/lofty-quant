@@ -1,7 +1,9 @@
+from datetime import date
 from pathlib import Path
 
 from quant.config import load_config
-from quant.utils import get_project_root, resolve_log_dir, resolve_path
+from quant.etl import ETLTask
+from quant.utils import build_raw_path, get_project_root, resolve_log_dir, resolve_path
 
 
 def test_get_project_root_finds_repository_root() -> None:
@@ -43,6 +45,38 @@ def test_resolve_path_expands_home_dir() -> None:
     assert (
         resolve_path("~/lofty-quant-test", get_project_root())
         == (Path.home() / "lofty-quant-test").resolve()
+    )
+
+
+def test_build_raw_path_uses_single_file_layout_for_trade_calendar(tmp_path: Path) -> None:
+    task = ETLTask(
+        dataset="trade-calendar",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 31),
+        exchange="SSE",
+    )
+
+    assert build_raw_path(tmp_path, task) == (
+        tmp_path / "tushare" / "trade-calendar" / "trade-calendar_tushare.csv"
+    )
+
+
+def test_build_raw_path_uses_month_partition_for_large_dataset(tmp_path: Path) -> None:
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 31),
+    )
+
+    assert build_raw_path(tmp_path, task) == (
+        tmp_path
+        / "tushare"
+        / "daily-ohlcv"
+        / "year=2024"
+        / "month=01"
+        / "daily-ohlcv_tushare_20240101_20240131.csv"
     )
 
 
