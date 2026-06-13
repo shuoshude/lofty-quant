@@ -4,10 +4,10 @@ install:
 	uv sync --all-extras
 
 etl:
-	uv run python scripts/run_etl.py
+	uv run python scripts/run_etl.py --help
 
-etl-date:
-	uv run python scripts/run_etl.py --date $(DATE)
+etl-status:
+	uv run python scripts/run_etl.py status daily-ohlcv --source tushare
 
 backtest:
 	uv run python scripts/run_backtest.py --strategy $(STRATEGY)
@@ -39,8 +39,6 @@ clean:
 
 init-db:
 	uv run python -c "from quant.data.db import DuckDBManager; ..."
-
-
 
 
 

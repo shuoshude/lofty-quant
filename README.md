@@ -24,12 +24,12 @@
 │   └── db/                           # DuckDB 数据库目录
 ├── log/                              # 运行日志目录，默认不提交
 ├── notebooks/                        # 研究 notebook
-├── scripts/                          # CLI/任务入口占位
+├── scripts/                          # CLI/任务入口
 ├── src/quant/
 │   ├── config.py                     # 统一配置加载
 │   ├── logger.py                     # 统一日志配置
 │   ├── data/                         # DuckDB schema、数据模型和查询入口
-│   ├── etl/                          # ETL 占位
+│   ├── etl/                          # ETL 通用入口契约和任务编排
 │   ├── features/                     # 因子工程占位
 │   ├── strategy/                     # 策略层占位
 │   ├── backtest/                     # 回测引擎占位
@@ -235,10 +235,68 @@ with manager.session() as conn:
 - `get_factors(trade_date, factor_names, factor_version=None)`：查询因子值。
 - `get_trade_calendar(start, end, exchange="SSE")`：查询交易日历。
 
+## ETL 入口
+
+ETL 使用 `scripts/run_etl.py` 作为轻量入口。当前不做 pipeline 框架和自动调度, 只保留 raw 落盘和 raw 加载两个阶段。
+
+ETL 分为两个阶段：
+
+```text
+外部数据源 -> fetch -> data/raw -> load -> DuckDB 或 processed Parquet
+```
+
+阶段命令可以独立执行：
+
+```bash
+uv run python scripts/run_etl.py fetch trade-calendar \
+  --source tushare \
+  --start-date 20240101 \
+  --end-date 20240131
+
+uv run python scripts/run_etl.py load trade-calendar \
+  --source tushare \
+  --start-date 20240101 \
+  --end-date 20240131
+```
+
+生命周期命令负责编排阶段：
+
+```bash
+uv run python scripts/run_etl.py backfill daily-ohlcv \
+  --source tushare \
+  --start-date 20200101 \
+  --end-date 20241231
+
+uv run python scripts/run_etl.py status daily-ohlcv \
+  --source tushare
+```
+
+生命周期约定：
+
+- `fetch`：只连接外部数据源，只写 `data/raw`，不写 DuckDB，不写 processed。
+- `load`：只读取 `data/raw`，清洗转换后写 DuckDB 或 processed，并写 `etl_manifest`。
+- `backfill`：历史回填，必须显式传入日期范围，按 `fetch -> load` 执行。
+- `status`：查看 `etl_manifest` 中的简单加载记录。
+
+raw 路径约定：
+
+```text
+data/raw/{source}/{dataset}/year=YYYY/month=MM/*.jsonl
+```
+
+当前还没有接入真实数据源。遇到未实现的数据集时, CLI 会返回中文错误：
+
+```text
+暂未实现数据集: dataset=..., source=...
+```
+
+下一步建议先实现一个真实数据集, 例如 `trade-calendar + tushare`, 跑通后再根据真实需要恢复 `sync` 或跨源校验。
+
 ## 常用命令
 
 ```bash
 make install      # uv sync --all-extras
+make etl-status   # uv run python scripts/run_etl.py status daily-ohlcv --source tushare
 make test         # uv run pytest
 make lint         # uv run ruff check src/ tests/
 make format       # uv run ruff format . && uv run ruff check --fix src/ tests/
@@ -265,6 +323,7 @@ uv run mypy src/
 - A 股日线研究版 DuckDB schema
 - Pydantic 数据模型
 - Repository 查询入口
+- ETL 生命周期入口
 - 基础测试覆盖
 
 待实现：

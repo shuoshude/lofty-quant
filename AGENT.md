@@ -10,7 +10,7 @@
 - 禁止使用 pip、pip install、bare python
 
 ## 常用命令
-- ETL：`uv run python scripts/run_etl.py --date 20240101`
+- ETL：`uv run python scripts/run_etl.py backfill daily-ohlcv --source tushare --start-date 20240101 --end-date 20240131`
 - 回测：`uv run python scripts/run_backtest.py --strategy momentum`
 - 测试：`uv run pytest`
 - 覆盖率：`uv run pytest --cov=src --cov-report=term-missing`
@@ -27,7 +27,7 @@
 - 所有 IO 操作用 pathlib，禁止 os.path
 
 ## 数据层规则（重要）
-- `data/raw/` 只读，ETL 脚本绝不修改原始 CSV
+- `data/raw/` 是原始落盘层，只有 fetch 阶段写入；load 只能读取 raw，不修改 raw
 - DuckDB 查询只通过 `src/quant/data/repository.py` 进行，禁止在其他模块直接写 SQL
 - Parquet 按 year/month 分区写入，文件名格式：`{ts_code}_{trade_date}.parquet`
 - DuckDB 连接通过 `src/quant/data/db.py` 的 context manager 管理，禁止裸连接
