@@ -19,6 +19,7 @@ from quant.utils import build_raw_path
 
 def test_tushare_source_returns_dataframe(monkeypatch, tmp_path: Path) -> None:
     calls: dict[str, object] = {}
+    sleep_calls: list[str] = []
 
     class FakeApi:
         def trade_cal(self, *, exchange, start_date, end_date):
@@ -29,6 +30,11 @@ def test_tushare_source_returns_dataframe(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: calls.update(token=token))
     monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
 
     task = ETLTask(
         dataset="trade-calendar",
@@ -46,7 +52,122 @@ def test_tushare_source_returns_dataframe(monkeypatch, tmp_path: Path) -> None:
         "start_date": "20240101",
         "end_date": "20240131",
     }
+    assert sleep_calls == ["sleep"]
     assert list(df.columns) == ["exchange", "cal_date", "is_open"]
+
+
+def test_tushare_source_fetches_daily_ohlcv_from_open_trade_dates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(
+        config,
+        [
+            ("SSE", date(2024, 1, 2), True, date(2023, 12, 29)),
+            ("SSE", date(2024, 1, 3), False, date(2024, 1, 2)),
+            ("SSE", date(2024, 1, 4), True, date(2024, 1, 2)),
+        ],
+    )
+    daily_calls: list[str] = []
+    sleep_calls: list[str] = []
+
+    class FakeApi:
+        def daily(self, *, trade_date):
+            daily_calls.append(trade_date)
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": trade_date,
+                        "open": 10.0,
+                        "high": 10.5,
+                        "low": 9.8,
+                        "close": 10.2,
+                        "vol": 1000.0,
+                        "amount": 10200.0,
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
+
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 4),
+        exchange="SSE",
+    )
+
+    frames_by_date = TushareClient(config).fetch_tushare_raw(task)
+
+    assert daily_calls == ["20240102", "20240104"]
+    assert sleep_calls == ["sleep", "sleep"]
+    assert isinstance(frames_by_date, dict)
+    assert list(frames_by_date) == [date(2024, 1, 2), date(2024, 1, 4)]
+    assert frames_by_date[date(2024, 1, 2)]["trade_date"].tolist() == ["20240102"]
+    assert frames_by_date[date(2024, 1, 4)]["trade_date"].tolist() == ["20240104"]
+
+
+def test_tushare_source_daily_ohlcv_returns_empty_columns(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+
+    class FakeApi:
+        def daily(self, *, trade_date):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+
+    frames_by_date = TushareClient(config).fetch_tushare_raw(task)
+
+    assert isinstance(frames_by_date, dict)
+    df = frames_by_date[date(2024, 1, 2)]
+    assert df.empty
+    assert list(df.columns) == list(tushare_source.DAILY_OHLCV_RAW_COLUMNS)
+
+
+def test_tushare_source_daily_ohlcv_requires_trade_calendar(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FakeApi:
+        def daily(self, *, trade_date):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+
+    with pytest.raises(ValueError, match="请先加载交易日历后再拉取日线行情"):
+        TushareClient(make_config(tmp_path, token="test-token")).fetch_tushare_raw(task)
 
 
 def test_tushare_source_requires_token(tmp_path: Path) -> None:
@@ -161,3 +282,19 @@ def make_config(tmp_path: Path, *, token: str | None) -> QuantConfig:
         ),
         secrets=SecretsConfig(tushare_token=token),
     )
+
+
+def write_trade_calendar(
+    config: QuantConfig,
+    rows: list[tuple[str, date, bool, date | None]],
+) -> None:
+    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+    manager.initialize()
+    with manager.session() as conn:
+        conn.executemany(
+            """
+            INSERT INTO dim_trade_calendar (exchange, cal_date, is_open, pretrade_date)
+            VALUES (?, ?, ?, ?)
+            """,
+            rows,
+        )

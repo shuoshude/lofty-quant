@@ -44,11 +44,12 @@ def fetch(
     config = _setup_runtime(config_dir, environment, log_level)
     task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
     try:
-        output_path = fetch_raw_data(config, task)
+        output_paths = fetch_raw_data(config, task)
     except NotImplementedError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    logger.bind(module="etl").info("原始数据落盘完成: {}", output_path)
-    typer.echo(f"原始数据落盘完成: {output_path}")
+    logger.bind(module="etl").info("原始数据落盘完成: 文件数量={}", len(output_paths))
+    for output_path in output_paths:
+        typer.echo(f"原始数据落盘完成: {output_path}")
 
 
 @app.command("load")
@@ -92,12 +93,16 @@ def backfill(
     config = _setup_runtime(config_dir, environment, log_level)
     task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
     try:
-        output_path = fetch_raw_data(config, task)
+        output_paths = fetch_raw_data(config, task)
         row_count = load_raw_data(config, task)
     except NotImplementedError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    logger.bind(module="etl").info("历史回填完成: raw={}, 行数={}", output_path, row_count)
-    typer.echo(f"历史回填完成: raw={output_path}, row_count={row_count}")
+    logger.bind(module="etl").info(
+        "历史回填完成: raw文件数量={}, 行数={}",
+        len(output_paths),
+        row_count,
+    )
+    typer.echo(f"历史回填完成: raw_count={len(output_paths)}, row_count={row_count}")
 
 
 @app.command()

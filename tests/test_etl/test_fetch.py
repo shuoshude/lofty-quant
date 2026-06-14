@@ -53,8 +53,27 @@ def test_partitioned_raw_files_scan_multiple_months(tmp_path: Path) -> None:
     )
     january_path = build_raw_path(tmp_path, january_task)
     february_path = build_raw_path(tmp_path, february_task)
+    out_of_range_path = build_raw_path(
+        tmp_path,
+        ETLTask(
+            dataset="daily-ohlcv",
+            source="akshare",
+            start_date=date(2024, 1, 30),
+            end_date=date(2024, 1, 30),
+        ),
+    )
+    legacy_range_path = (
+        tmp_path
+        / "akshare"
+        / "daily-ohlcv"
+        / "year=2024"
+        / "month=01"
+        / "daily-ohlcv_akshare_20240131_20240201.csv"
+    )
     write_raw_csv(january_path, pd.DataFrame([{"trade_date": "20240131"}]))
     write_raw_csv(february_path, pd.DataFrame([{"trade_date": "20240201"}]))
+    write_raw_csv(out_of_range_path, pd.DataFrame([{"trade_date": "20240130"}]))
+    write_raw_csv(legacy_range_path, pd.DataFrame([{"trade_date": "20240131"}]))
 
     task = ETLTask(
         dataset="daily-ohlcv",
@@ -81,12 +100,113 @@ def test_fetch_raw_data_uses_config_raw_dir(monkeypatch, tmp_path: Path) -> None
 
     monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
 
-    path = fetch_raw_data(config, task)
+    paths = fetch_raw_data(config, task)
 
-    assert path == (
+    expected_path = (
         config.paths.raw_dir / "tushare" / "trade-calendar" / "trade-calendar_tushare.csv"
     )
-    assert path.exists()
+    assert paths == (expected_path,)
+    assert expected_path.exists()
+
+
+def test_fetch_raw_data_writes_daily_ohlcv_daily_files(monkeypatch, tmp_path: Path) -> None:
+    config = load_config(config_dir=make_config_dir(tmp_path))
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+        exchange="SSE",
+    )
+
+    def fake_fetch_tushare_raw(_config, _task):
+        return {
+            date(2024, 1, 2): pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20240102",
+                        "open": 10.0,
+                        "close": 10.2,
+                    }
+                ]
+            ),
+            date(2024, 1, 3): pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20240103",
+                        "open": 20.0,
+                        "close": 20.2,
+                    }
+                ]
+            ),
+        }
+
+    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
+
+    paths = fetch_raw_data(config, task)
+
+    expected_paths = (
+        config.paths.raw_dir
+        / "tushare"
+        / "daily-ohlcv"
+        / "year=2024"
+        / "month=01"
+        / "daily-ohlcv_tushare_20240102.csv",
+        config.paths.raw_dir
+        / "tushare"
+        / "daily-ohlcv"
+        / "year=2024"
+        / "month=01"
+        / "daily-ohlcv_tushare_20240103.csv",
+    )
+    assert paths == expected_paths
+    expected = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20240102",
+                "open": "10.0",
+                "close": "10.2",
+            }
+        ]
+    )
+    pd.testing.assert_frame_equal(read_raw_csv(paths[0]), expected)
+    assert read_raw_csv(paths[1])["trade_date"].tolist() == ["20240103"]
+
+
+def test_fetch_raw_data_dry_run_does_not_write_daily_ohlcv(monkeypatch, tmp_path: Path) -> None:
+    config = load_config(config_dir=make_config_dir(tmp_path))
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        dry_run=True,
+    )
+
+    def fake_fetch_tushare_raw(_config, _task):
+        return {
+            date(2024, 1, 2): pd.DataFrame(
+                [{"ts_code": "000001.SZ", "trade_date": "20240102"}],
+            )
+        }
+
+    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
+
+    paths = fetch_raw_data(config, task)
+
+    expected_path = (
+        config.paths.raw_dir
+        / "tushare"
+        / "daily-ohlcv"
+        / "year=2024"
+        / "month=01"
+        / "daily-ohlcv_tushare_20240102.csv"
+    )
+    assert paths == (expected_path,)
+    assert not expected_path.exists()
 
 
 def make_config_dir(tmp_path: Path) -> Path:

@@ -17,7 +17,7 @@ def test_fetch_command_calls_fetch_function(monkeypatch, tmp_path: Path) -> None
 
     def fake_fetch(config, task):
         calls.append(f"fetch:{config.paths.raw_dir.name}:{task.dataset}:{task.source}")
-        return config.paths.raw_dir / "raw.csv"
+        return (config.paths.raw_dir / "raw.csv",)
 
     monkeypatch.setattr(run_etl, "fetch_raw_data", fake_fetch)
 
@@ -37,6 +37,38 @@ def test_fetch_command_calls_fetch_function(monkeypatch, tmp_path: Path) -> None
 
     assert result.exit_code == 0
     assert calls == ["fetch:raw:trade-calendar:tushare"]
+    assert "原始数据落盘完成:" in result.output
+
+
+def test_fetch_command_can_print_multiple_raw_paths(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    patch_runtime(monkeypatch, run_etl, tmp_path)
+
+    def fake_fetch(config, task):
+        return (
+            config.paths.raw_dir / "daily-ohlcv_tushare_20240102.csv",
+            config.paths.raw_dir / "daily-ohlcv_tushare_20240103.csv",
+        )
+
+    monkeypatch.setattr(run_etl, "fetch_raw_data", fake_fetch)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "fetch",
+            "daily-ohlcv",
+            "--source",
+            "tushare",
+            "--start-date",
+            "20240102",
+            "--end-date",
+            "20240103",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "daily-ohlcv_tushare_20240102.csv" in result.output
+    assert "daily-ohlcv_tushare_20240103.csv" in result.output
 
 
 def test_load_command_calls_load_function(monkeypatch, tmp_path: Path) -> None:
@@ -75,7 +107,7 @@ def test_backfill_command_calls_fetch_then_load(monkeypatch, tmp_path: Path) -> 
 
     def fake_fetch(config, task):
         calls.append("fetch")
-        return config.paths.raw_dir / "raw.csv"
+        return (config.paths.raw_dir / "raw.csv",)
 
     def fake_load(config, task):
         calls.append("load")
@@ -100,6 +132,30 @@ def test_backfill_command_calls_fetch_then_load(monkeypatch, tmp_path: Path) -> 
 
     assert result.exit_code == 0
     assert calls == ["fetch", "load"]
+
+
+def test_load_daily_ohlcv_returns_placeholder_error(tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "load",
+            "daily-ohlcv",
+            "--source",
+            "tushare",
+            "--start-date",
+            "20240102",
+            "--end-date",
+            "20240102",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "暂未实现日线行情 load: dataset=daily-ohlcv, source=tushare" in result.output
 
 
 def test_unimplemented_dataset_returns_chinese_error(tmp_path: Path) -> None:

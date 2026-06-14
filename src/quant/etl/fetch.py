@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from datetime import date
+from collections.abc import Iterable, Mapping
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -12,7 +12,9 @@ from pandas import DataFrame
 
 from quant.config import QuantConfig
 from quant.etl.etl_model import ETLTask
-from quant.utils import build_raw_path, is_single_file_raw_dataset
+from quant.utils import build_raw_path, is_daily_file_raw_dataset, is_single_file_raw_dataset
+
+RawFetchResult = DataFrame | Mapping[date, DataFrame]
 
 
 def write_raw_csv(path: Path, df: DataFrame) -> int:
@@ -45,10 +47,18 @@ def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> list
         )
         if partition_dir.exists():
             files.extend(partition_dir.glob(pattern))
-    return sorted(path for path in files if path.is_file())
+
+    existing_files = sorted(path for path in files if path.is_file())
+    if is_daily_file_raw_dataset(task):
+        return [
+            path
+            for path in existing_files
+            if _is_daily_raw_file_in_range(path, task)
+        ]
+    return existing_files
 
 
-def fetch_raw_data(config: QuantConfig, task: ETLTask) -> Path:
+def fetch_raw_data(config: QuantConfig, task: ETLTask) -> tuple[Path, ...]:
     """根据 (source, dataset) 拉取 DataFrame 并写入 raw CSV。"""
     logger.bind(module="etl").info(
         "开始拉取原始数据: dataset={}, source={}, start_date={}, end_date={}, exchange={}",
@@ -59,10 +69,33 @@ def fetch_raw_data(config: QuantConfig, task: ETLTask) -> Path:
         task.exchange or "-",
     )
     if task.source == "tushare":
-        df = _fetch_tushare_raw(config, task)
+        raw_result = _fetch_tushare_raw(config, task)
     else:
         raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
+    return _write_raw_result(config, task, raw_result)
+
+
+def _write_raw_result(
+    config: QuantConfig,
+    task: ETLTask,
+    raw_result: RawFetchResult,
+) -> tuple[Path, ...]:
+    """将 source 返回的 raw DataFrame 写入一个或多个 CSV。"""
+    if isinstance(raw_result, Mapping):
+        paths: list[Path] = []
+        for trade_date, df in sorted(raw_result.items()):
+            daily_task = task.model_copy(
+                update={"start_date": trade_date, "end_date": trade_date},
+            )
+            paths.append(_write_single_raw_frame(config, daily_task, df))
+        return tuple(paths)
+
+    return (_write_single_raw_frame(config, task, raw_result),)
+
+
+def _write_single_raw_frame(config: QuantConfig, task: ETLTask, df: DataFrame) -> Path:
+    """写入单个 raw CSV。"""
     path = build_raw_path(config.paths.raw_dir, task)
     if task.dry_run:
         logger.bind(module="etl").info(
@@ -77,7 +110,7 @@ def fetch_raw_data(config: QuantConfig, task: ETLTask) -> Path:
     return path
 
 
-def _fetch_tushare_raw(config: QuantConfig, task: ETLTask) -> DataFrame:
+def _fetch_tushare_raw(config: QuantConfig, task: ETLTask) -> RawFetchResult:
     """懒加载 Tushare 数据源, 避免 source 与 raw 工具循环导入。"""
     from quant.etl.sources.tushare_source import TushareClient
 
@@ -98,3 +131,24 @@ def _iter_months(start_date: date, end_date: date) -> Iterable[date]:
             month = 1
         else:
             month += 1
+
+
+def _is_daily_raw_file_in_range(path: Path, task: ETLTask) -> bool:
+    """判断日线 raw 文件名中的交易日是否落在任务范围内。"""
+    file_date = _parse_daily_raw_file_date(path, task)
+    return file_date is not None and task.start_date <= file_date <= task.end_date
+
+
+def _parse_daily_raw_file_date(path: Path, task: ETLTask) -> date | None:
+    """从 daily-ohlcv_tushare_YYYYMMDD.csv 这类文件名解析交易日。"""
+    prefix = f"{task.dataset}_{task.source}_"
+    if not path.stem.startswith(prefix):
+        return None
+
+    date_text = path.stem.removeprefix(prefix)
+    if len(date_text) != 8 or not date_text.isdigit():
+        return None
+    try:
+        return datetime.strptime(date_text, "%Y%m%d").date()
+    except ValueError:
+        return None

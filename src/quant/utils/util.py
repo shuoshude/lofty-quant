@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from quant.etl import ETLTask
 
 SINGLE_FILE_RAW_DATASETS = {"trade-calendar"}
+DAILY_FILE_RAW_DATASETS = {"daily-ohlcv"}
 
 
 def get_project_root(start: Path | None = None) -> Path:
@@ -36,6 +37,11 @@ def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> Path
         filename = f"{task.dataset}_{task.source}.{normalized_suffix}"
         return base_dir / filename
 
+    if is_daily_file_raw_dataset(task):
+        partition_dir = base_dir / f"year={task.start_date:%Y}" / f"month={task.start_date:%m}"
+        filename = f"{task.dataset}_{task.source}_{task.start_date:%Y%m%d}.{normalized_suffix}"
+        return partition_dir / filename
+
     partition_dir = base_dir / f"year={task.start_date:%Y}" / f"month={task.start_date:%m}"
     filename = (
         f"{task.dataset}_{task.source}_{task.start_date:%Y%m%d}_"
@@ -47,6 +53,11 @@ def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> Path
 def is_single_file_raw_dataset(task: ETLTask) -> bool:
     """判断数据集 raw 是否使用单文件布局。"""
     return task.dataset in SINGLE_FILE_RAW_DATASETS
+
+
+def is_daily_file_raw_dataset(task: ETLTask) -> bool:
+    """判断数据集 raw 是否按交易日单文件布局。"""
+    return task.dataset in DAILY_FILE_RAW_DATASETS
 
 
 def resolve_log_dir(log_dir: Path | str | None, config: QuantConfig) -> Path:

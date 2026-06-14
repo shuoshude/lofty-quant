@@ -76,7 +76,7 @@ def test_build_raw_path_uses_month_partition_for_large_dataset(tmp_path: Path) -
         / "daily-ohlcv"
         / "year=2024"
         / "month=01"
-        / "daily-ohlcv_tushare_20240101_20240131.csv"
+        / "daily-ohlcv_tushare_20240101.csv"
     )
 
 

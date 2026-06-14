@@ -1,6 +1,7 @@
 from .util import (
     build_raw_path,
     get_project_root,
+    is_daily_file_raw_dataset,
     is_single_file_raw_dataset,
     resolve_log_dir,
     resolve_path,
@@ -9,6 +10,7 @@ from .util import (
 __all__ = [
     "build_raw_path",
     "get_project_root",
+    "is_daily_file_raw_dataset",
     "is_single_file_raw_dataset",
     "resolve_log_dir",
     "resolve_path",

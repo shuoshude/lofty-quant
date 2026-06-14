@@ -259,6 +259,12 @@ uv run python scripts/run_etl.py load trade-calendar \
   --exchange SSE \
   --start-date 20240101 \
   --end-date 20240131
+
+uv run python scripts/run_etl.py fetch daily-ohlcv \
+  --source tushare \
+  --exchange SSE \
+  --start-date 20240102 \
+  --end-date 20240131
 ```
 
 生命周期命令负责编排阶段：
@@ -284,16 +290,18 @@ uv run python scripts/run_etl.py status trade-calendar \
 当前已支持：
 
 - `trade-calendar + tushare`：拉取 Tushare 交易日历，保存 raw CSV，加载到 DuckDB `dim_trade_calendar`，并通过 `status` 查询目标表真实状态。
-- `daily-ohlcv`：保留 raw/processed 路径约定和数据模型，具体数据源拉取与加载逻辑待接入。
+- `daily-ohlcv + tushare`：读取本地交易日历中的开市日，逐日调用 Tushare 日线接口，每个交易日保存一个 raw CSV；load 到 processed Parquet 暂未实现。
 
 raw 层约定使用数据源接口返回的 `pandas.DataFrame` 原样保存为 CSV：
 
 ```text
 data/raw/tushare/trade-calendar/trade-calendar_tushare.csv
-data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240101_20240131.csv
+data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240102.csv
 ```
 
-交易日历这类小维表使用单文件 raw；日线行情这类持续增长的数据集按年月分区。raw 文件是 fetch 阶段的输入缓存，不代表当前完整数据状态；DuckDB 表或 processed Parquet 才是 load 后的事实源。
+交易日历这类小维表使用单文件 raw；日线行情这类持续增长的数据集按年月分区, 每个交易日一个 raw CSV。raw 文件是 fetch 阶段的输入缓存，不代表当前完整数据状态；DuckDB 表或 processed Parquet 才是 load 后的事实源。
+
+拉取 Tushare 日线行情前，需要先完成交易日历加载。日线接口会按 `dim_trade_calendar` 中的开市日逐日请求，并在请求之间固定等待 0.2 秒，避免超过每分钟 500 次。范围 fetch 会生成多个单日 raw 文件。
 
 遇到未实现的数据集时, CLI 会返回中文错误：
 
@@ -336,11 +344,12 @@ uv run mypy src/
 - Repository 查询入口
 - 轻量 ETL 入口
 - Tushare 交易日历 fetch/load/status 最小链路
+- Tushare 日线行情 raw fetch
 - 基础测试覆盖
 
 待实现：
 
-- Tushare 日线行情 fetch/load
+- Tushare 日线行情 load 到 processed Parquet
 - AkShare、MiniQMT 等更多数据源适配
 - 技术指标和因子 pipeline
 - 策略基类和信号生成

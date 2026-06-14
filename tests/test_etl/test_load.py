@@ -216,6 +216,19 @@ def test_load_raw_data_rejects_unknown_source(tmp_path: Path) -> None:
         load_raw_data(config, task)
 
 
+def test_load_daily_ohlcv_is_placeholder(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+    )
+
+    with pytest.raises(NotImplementedError, match="暂未实现日线行情 load"):
+        load_raw_data(config, task)
+
+
 def make_config(tmp_path: Path) -> QuantConfig:
     return QuantConfig(
         project=ProjectConfig(name="test"),
