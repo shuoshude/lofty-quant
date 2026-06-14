@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import date, datetime
+from pathlib import Path
 from typing import Annotated
 
 import duckdb
@@ -25,6 +26,7 @@ ConfigDirOption = Annotated[str | None, typer.Option("--config-dir", help="配�
 EnvironmentOption = Annotated[str | None, typer.Option("--environment", "-e", help="配置环境")]
 LogLevelOption = Annotated[str, typer.Option("--log-level", help="日志级别")]
 ExchangeOption = Annotated[str | None, typer.Option("--exchange", help="交易所")]
+YearOption = Annotated[int, typer.Option("--year", help="归档年份")]
 
 
 @app.command()
@@ -45,7 +47,7 @@ def fetch(
     task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
     try:
         output_paths = fetch_raw_data(config, task)
-    except NotImplementedError as exc:
+    except (FileNotFoundError, NotImplementedError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     logger.bind(module="etl").info("原始数据落盘完成: 文件数量={}", len(output_paths))
     for output_path in output_paths:
@@ -70,7 +72,7 @@ def load_command(
     task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
     try:
         row_count = load_raw_data(config, task)
-    except NotImplementedError as exc:
+    except (FileNotFoundError, NotImplementedError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     logger.bind(module="etl").info("目标存储加载完成: 行数={}", row_count)
     typer.echo(f"目标存储加载完成: row_count={row_count}")
@@ -95,7 +97,7 @@ def backfill(
     try:
         output_paths = fetch_raw_data(config, task)
         row_count = load_raw_data(config, task)
-    except NotImplementedError as exc:
+    except (FileNotFoundError, NotImplementedError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     logger.bind(module="etl").info(
         "历史回填完成: raw文件数量={}, 行数={}",
@@ -103,6 +105,31 @@ def backfill(
         row_count,
     )
     typer.echo(f"历史回填完成: raw_count={len(output_paths)}, row_count={row_count}")
+
+
+@app.command()
+def archive(
+    dataset: DatasetArg,
+    source: SourceOption,
+    year: YearOption,
+    config_dir: ConfigDirOption = None,
+    environment: EnvironmentOption = None,
+    log_level: LogLevelOption = "INFO",
+) -> None:
+    """归档 processed 数据。"""
+    config = _setup_runtime(config_dir, environment, log_level)
+    try:
+        if source == "tushare" and dataset == "daily-ohlcv":
+            from quant.etl.sources.tushare_source import archive_daily_ohlcv_year
+
+            output_path = archive_daily_ohlcv_year(config, year)
+        else:
+            raise NotImplementedError(f"暂未实现归档: dataset={dataset}, source={source}")
+    except (FileNotFoundError, NotImplementedError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    logger.bind(module="etl").info("归档完成: dataset={}, 路径={}", dataset, output_path)
+    typer.echo(f"归档完成: {output_path}")
 
 
 @app.command()
@@ -115,25 +142,42 @@ def status(
 ) -> None:
     """查看目标数据真实状态。"""
     config = _setup_runtime(config_dir, environment, log_level)
-    with _status_session(config) as conn:
-        if dataset == "trade-calendar":
+    if dataset == "trade-calendar":
+        with _status_session(config) as conn:
             state = _get_trade_calendar_status(conn)
-        else:
-            raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
+        logger.bind(module="etl").info(
+            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
+            dataset,
+            source or "*",
+            state["row_count"],
+        )
+        typer.echo(f"数据集: {dataset}")
+        typer.echo(f"数据源: {source or '*'}")
+        typer.echo(f"交易所: {state['exchange']}")
+        typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
+        typer.echo(f"结束日期: {_format_optional_value(state['end_date'])}")
+        typer.echo(f"日历行数: {state['row_count']}")
+        typer.echo(f"开市天数: {state['open_count']}")
+        return
 
-    logger.bind(module="etl").info(
-        "目标数据状态查询完成: dataset={}, source={}, row_count={}",
-        dataset,
-        source or "*",
-        state["row_count"],
-    )
-    typer.echo(f"数据集: {dataset}")
-    typer.echo(f"数据源: {source or '*'}")
-    typer.echo(f"交易所: {state['exchange']}")
-    typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
-    typer.echo(f"结束日期: {_format_optional_value(state['end_date'])}")
-    typer.echo(f"日历行数: {state['row_count']}")
-    typer.echo(f"开市天数: {state['open_count']}")
+    if dataset == "daily-ohlcv":
+        state = _get_daily_ohlcv_status(config)
+        logger.bind(module="etl").info(
+            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
+            dataset,
+            source or "*",
+            state["row_count"],
+        )
+        typer.echo(f"数据集: {dataset}")
+        typer.echo(f"数据源: {source or '*'}")
+        typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
+        typer.echo(f"结束日期: {_format_optional_value(state['end_date'])}")
+        typer.echo(f"行情行数: {state['row_count']}")
+        typer.echo(f"交易日数: {state['trade_date_count']}")
+        typer.echo(f"证券数: {state['security_count']}")
+        return
+
+    raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
 
 
 @contextmanager
@@ -185,6 +229,54 @@ def _get_trade_calendar_status(conn: DuckDBPyConnection) -> dict[str, object]:
         "end_date": end_date,
         "row_count": int(row_count),
         "open_count": int(open_count or 0),
+    }
+
+
+def _get_daily_ohlcv_status(config: QuantConfig) -> dict[str, object]:
+    """从日线行情 processed Parquet 聚合真实状态。"""
+    dataset_dir = config.paths.processed_dir / "ohlcv"
+    if not list(dataset_dir.glob("**/*.parquet")):
+        return {
+            "start_date": None,
+            "end_date": None,
+            "row_count": 0,
+            "trade_date_count": 0,
+            "security_count": 0,
+        }
+
+    parquet_glob = _duckdb_path(dataset_dir / "**" / "*.parquet")
+    conn = duckdb.connect(":memory:")
+    try:
+        row = conn.execute(
+            f"""
+            SELECT
+                MIN(trade_date) AS start_date,
+                MAX(trade_date) AS end_date,
+                COUNT(*) AS row_count,
+                COUNT(DISTINCT trade_date) AS trade_date_count,
+                COUNT(DISTINCT ts_code) AS security_count
+            FROM read_parquet('{parquet_glob}', union_by_name=true)
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return {
+            "start_date": None,
+            "end_date": None,
+            "row_count": 0,
+            "trade_date_count": 0,
+            "security_count": 0,
+        }
+
+    start_date, end_date, row_count, trade_date_count, security_count = row
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "row_count": int(row_count or 0),
+        "trade_date_count": int(trade_date_count or 0),
+        "security_count": int(security_count or 0),
     }
 
 
@@ -244,6 +336,11 @@ def _format_optional_value(value: object) -> str:
     if isinstance(value, date | datetime):
         return value.isoformat()
     return str(value)
+
+
+def _duckdb_path(path: Path) -> str:
+    """将文件系统路径格式化为 DuckDB SQL 字符串字面量。"""
+    return path.as_posix().replace("'", "''")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,25 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
         },
     )
     write_parquet(
+        processed_dir / "ohlcv" / "year=2023" / "ohlcv_2023.parquet",
+        {
+            "ts_code": ["000002.SZ"],
+            "trade_date": [date(2023, 12, 29)],
+            "open": [20.0],
+            "high": [21.0],
+            "low": [19.5],
+            "close": [20.5],
+            "pre_close": [20.0],
+            "change": [0.5],
+            "pct_chg": [2.5],
+            "volume": [2000.0],
+            "amount": [41000.0],
+            "is_suspended": [False],
+            "is_st": [False],
+            "limit_status": ["none"],
+        },
+    )
+    write_parquet(
         processed_dir / "adj_factor" / "year=2024" / "month=01" / "adj.parquet",
         {
             "ts_code": ["000001.SZ"],
@@ -81,10 +100,15 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
                 """
             ).fetchall()
         }
-        adj_close = conn.execute("SELECT adj_close FROM v_daily_adj").fetchone()[0]
+        adj_close = conn.execute(
+            "SELECT adj_close FROM v_daily_adj WHERE ts_code = ?",
+            ["000001.SZ"],
+        ).fetchone()[0]
+        daily_count = conn.execute("SELECT COUNT(*) FROM v_daily_ohlcv").fetchone()[0]
 
     assert {"v_daily_ohlcv", "v_adj_factor", "v_factors", "v_daily_adj"}.issubset(view_names)
     assert adj_close == 21.0
+    assert daily_count == 2
 
 
 def write_parquet(path: Path, data: dict[str, list[object]]) -> None:

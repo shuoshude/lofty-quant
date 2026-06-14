@@ -1,6 +1,6 @@
 # lofty-quant
 
-个人 A 股量化交易系统。当前项目已经完成项目骨架、TOML 配置加载、Loguru 日志配置、A 股日线研究版 DuckDB 数据层，以及 `Tushare -> raw CSV -> DuckDB` 的交易日历最小 ETL 链路；因子、策略、回测和更多行情数据后续按实际使用逐步实现。
+个人 A 股量化交易系统。当前项目已经完成项目骨架、TOML 配置加载、Loguru 日志配置、A 股日线研究版 DuckDB 数据层，以及 `Tushare -> raw CSV -> DuckDB/Parquet` 的交易日历和日线行情轻量 ETL 链路；因子、策略、回测和更多数据源后续按实际使用逐步实现。
 
 ## 技术栈
 
@@ -180,10 +180,21 @@ data/processed/factors/       -> v_factors
 
 ### Parquet 分区约定
 
-日线行情、复权因子、每日指标、指数行情和因子按交易日期分区：
+日线行情 load 时先写月度 Parquet 文件：
 
 ```text
 data/processed/ohlcv/year=2024/month=01/*.parquet
+```
+
+已结束年份可以通过独立归档命令合并为年文件：
+
+```text
+data/processed/ohlcv/year=2024/ohlcv_2024.parquet
+```
+
+归档成功后会删除对应月文件，避免 DuckDB 视图重复读取同一批行情数据。复权因子、每日指标、指数行情和因子仍按交易日期年月分区：
+
+```text
 data/processed/adj_factor/year=2024/month=01/*.parquet
 data/processed/daily_basic/year=2024/month=01/*.parquet
 data/processed/index_daily/year=2024/month=01/*.parquet
@@ -265,6 +276,12 @@ uv run python scripts/run_etl.py fetch daily-ohlcv \
   --exchange SSE \
   --start-date 20240102 \
   --end-date 20240131
+
+uv run python scripts/run_etl.py load daily-ohlcv \
+  --source tushare \
+  --exchange SSE \
+  --start-date 20240102 \
+  --end-date 20240131
 ```
 
 生命周期命令负责编排阶段：
@@ -278,6 +295,13 @@ uv run python scripts/run_etl.py backfill trade-calendar \
 
 uv run python scripts/run_etl.py status trade-calendar \
   --source tushare
+
+uv run python scripts/run_etl.py status daily-ohlcv \
+  --source tushare
+
+uv run python scripts/run_etl.py archive daily-ohlcv \
+  --source tushare \
+  --year 2025
 ```
 
 生命周期约定：
@@ -285,12 +309,13 @@ uv run python scripts/run_etl.py status trade-calendar \
 - `fetch`：只连接外部数据源，只写 `data/raw`，不写 DuckDB，不写 processed。
 - `load`：只读取 `data/raw`，清洗转换后写 DuckDB 或 processed。
 - `backfill`：历史回填，必须显式传入日期范围，按 `fetch -> load` 执行。
+- `archive`：将已结束年份的日线行情月文件合并为年文件，并删除对应月文件。
 - `status`：直接从目标表或 processed 数据聚合当前真实状态。
 
 当前已支持：
 
 - `trade-calendar + tushare`：拉取 Tushare 交易日历，保存 raw CSV，加载到 DuckDB `dim_trade_calendar`，并通过 `status` 查询目标表真实状态。
-- `daily-ohlcv + tushare`：读取本地交易日历中的开市日，逐日调用 Tushare 日线接口，每个交易日保存一个 raw CSV；load 到 processed Parquet 暂未实现。
+- `daily-ohlcv + tushare`：读取本地交易日历中的开市日，逐日调用 Tushare 日线接口，每个交易日保存一个 raw CSV；load 时标准化字段并写入月度 processed Parquet；已结束年份可归档为年度 Parquet。
 
 raw 层约定使用数据源接口返回的 `pandas.DataFrame` 原样保存为 CSV：
 
@@ -303,13 +328,22 @@ data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240102.csv
 
 拉取 Tushare 日线行情前，需要先完成交易日历加载。日线接口会按 `dim_trade_calendar` 中的开市日逐日请求，并在请求之间固定等待 0.2 秒，避免超过每分钟 500 次。范围 fetch 会生成多个单日 raw 文件。
 
+日线行情 processed 层约定：
+
+```text
+data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet
+data/processed/ohlcv/year=2024/ohlcv_2024.parquet
+```
+
+`load daily-ohlcv` 永远先写月文件；如果同一月文件已存在，会读取旧文件和新 raw 合并，并按 `(ts_code, trade_date)` 去重，新数据覆盖旧数据。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份，会把该年份月文件合并到年文件，写入成功后删除月文件。不要长期同时保留同一年份的月文件和年文件，否则递归读取时会重复统计。
+
 遇到未实现的数据集时, CLI 会返回中文错误：
 
 ```text
 暂未实现数据集: dataset=..., source=...
 ```
 
-暂不维护 ETL 状态表作为判断依据。`etl_manifest` 只做兼容保留，业务状态查询以目标数据实时聚合为准；后续接入日线行情时，也优先从 processed Parquet 或 DuckDB view 计算覆盖范围和缺失交易日。
+暂不维护 ETL 状态表作为判断依据。`etl_manifest` 只做兼容保留，业务状态查询以目标数据实时聚合为准；交易日历从 `dim_trade_calendar` 聚合，日线行情从 `data/processed/ohlcv/**/*.parquet` 聚合。
 
 ## 常用命令
 
@@ -344,13 +378,13 @@ uv run mypy src/
 - Repository 查询入口
 - 轻量 ETL 入口
 - Tushare 交易日历 fetch/load/status 最小链路
-- Tushare 日线行情 raw fetch
+- Tushare 日线行情 raw fetch、月度 load、年度 archive、status
 - 基础测试覆盖
 
 待实现：
 
-- Tushare 日线行情 load 到 processed Parquet
 - AkShare、MiniQMT 等更多数据源适配
+- 日线行情缺失交易日检查和补数辅助命令
 - 技术指标和因子 pipeline
 - 策略基类和信号生成
 - A 股回测撮合、组合、绩效指标

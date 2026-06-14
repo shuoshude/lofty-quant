@@ -134,7 +134,7 @@ def test_backfill_command_calls_fetch_then_load(monkeypatch, tmp_path: Path) -> 
     assert calls == ["fetch", "load"]
 
 
-def test_load_daily_ohlcv_returns_placeholder_error(tmp_path: Path) -> None:
+def test_load_daily_ohlcv_reports_missing_raw_file(tmp_path: Path) -> None:
     run_etl = load_run_etl_module()
     config_dir = make_config_dir(tmp_path)
 
@@ -155,7 +155,37 @@ def test_load_daily_ohlcv_returns_placeholder_error(tmp_path: Path) -> None:
     )
 
     assert result.exit_code != 0
-    assert "暂未实现日线行情 load: dataset=daily-ohlcv, source=tushare" in result.output
+    assert "未找到日线行情 raw CSV 文件" in result.output
+
+
+def test_archive_command_calls_archive_function(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    patch_runtime(monkeypatch, run_etl, tmp_path)
+    calls: list[str] = []
+
+    from quant.etl.sources import tushare_source
+
+    def fake_archive(config, year):
+        calls.append(f"archive:{config.paths.processed_dir.name}:{year}")
+        return config.paths.processed_dir / "ohlcv" / f"year={year}" / f"ohlcv_{year}.parquet"
+
+    monkeypatch.setattr(tushare_source, "archive_daily_ohlcv_year", fake_archive)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "archive",
+            "daily-ohlcv",
+            "--source",
+            "tushare",
+            "--year",
+            "2025",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["archive:processed:2025"]
+    assert "归档完成:" in result.output
 
 
 def test_unimplemented_dataset_returns_chinese_error(tmp_path: Path) -> None:
@@ -215,6 +245,40 @@ def test_status_command_reads_trade_calendar_table(monkeypatch, tmp_path: Path) 
     assert "结束日期: 2024-01-31" in result.output
     assert "日历行数: 31" in result.output
     assert "开市天数: 22" in result.output
+
+
+def test_status_command_reads_daily_ohlcv_processed_state(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+
+    def fake_status(config):
+        return {
+            "start_date": "2024-01-02",
+            "end_date": "2024-01-31",
+            "row_count": 100,
+            "trade_date_count": 22,
+            "security_count": 5,
+        }
+
+    monkeypatch.setattr(run_etl, "_get_daily_ohlcv_status", fake_status)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "status",
+            "daily-ohlcv",
+            "--source",
+            "tushare",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "数据集: daily-ohlcv" in result.output
+    assert "行情行数: 100" in result.output
+    assert "交易日数: 22" in result.output
+    assert "证券数: 5" in result.output
 
 
 def patch_runtime(monkeypatch, run_etl: ModuleType, tmp_path: Path) -> None:

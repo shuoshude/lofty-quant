@@ -5,20 +5,23 @@ from loguru import logger
 from quant.config import load_config
 from quant.etl import ETLTask, fetch_raw_data
 from quant.logger import setup_logger
+from quant.data.db import DuckDBManager 
 
 
 def main() -> None:
     setup_logger()
     config = load_config()
     logger.info("测试")
-    task = ETLTask(
-        source="tushare",
-        dataset="trade-calendar",
-        start_date=date(2026, 6, 1),
-        end_date=date(2026, 6, 13),
-        exchange="SSE",
-    )
-    fetch_raw_data(config, task)
+    # task = ETLTask(
+    #     source="tushare",
+    #     dataset="trade-calendar",
+    #     start_date=date(2026, 6, 1),
+    #     end_date=date(2026, 6, 13),
+    #     exchange="SSE",
+    # )
+    # fetch_raw_data(config, task)
+    manager = DuckDBManager(db_path=config.paths.database_path, processed_dir=config.paths.processed_dir)
+    manager.initialize()
 
 
 if __name__ == "__main__":

@@ -126,7 +126,11 @@ class DuckDBManager:
             conn.execute(
                 f"""
                 CREATE OR REPLACE VIEW {dataset.view_name} AS
-                SELECT * FROM read_parquet('{_duckdb_path(parquet_glob)}', hive_partitioning=true)
+                SELECT *
+                FROM read_parquet(
+                    '{_duckdb_path(parquet_glob)}',
+                    union_by_name=true
+                )
                 """
             )
             logger.info("已注册 DuckDB 视图 {}", dataset.view_name)
