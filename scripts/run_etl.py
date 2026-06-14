@@ -116,6 +116,12 @@ def status(
         else:
             raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
 
+    logger.bind(module="etl").info(
+        "目标数据状态查询完成: dataset={}, source={}, row_count={}",
+        dataset,
+        source or "*",
+        state["row_count"],
+    )
     typer.echo(f"数据集: {dataset}")
     typer.echo(f"数据源: {source or '*'}")
     typer.echo(f"交易所: {state['exchange']}")

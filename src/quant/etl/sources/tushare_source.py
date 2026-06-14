@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pandas as pd
 import tushare as ts
+from loguru import logger
 from pandas import DataFrame
 
 from quant.config import QuantConfig
@@ -36,12 +37,20 @@ class TushareClient:
     def fetch_trade_calendar(self, task: ETLTask) -> DataFrame:
         """拉取交易日历原始数据。"""
         exchange = task.exchange or ""
+        logger.bind(module="etl").info(
+            "开始调用 Tushare 交易日历接口: exchange={}, start_date={}, end_date={}",
+            exchange or "all",
+            task.start_date,
+            task.end_date,
+        )
         result = self._pro_api.trade_cal(
             exchange=exchange,
             start_date=task.start_date.strftime("%Y%m%d"),
             end_date=task.end_date.strftime("%Y%m%d"),
         )
-        return cast(DataFrame, result)
+        df = cast(DataFrame, result)
+        logger.bind(module="etl").info("Tushare 交易日历接口返回完成: 行数={}", len(df.index))
+        return df
 
 
 def load_tushare_data(config: QuantConfig, task: ETLTask) -> int:
@@ -57,12 +66,20 @@ def load_trade_calendar(config: QuantConfig, task: ETLTask) -> int:
     if not raw_path.is_file():
         raise FileNotFoundError(f"未找到 raw CSV 文件: {raw_path}")
 
+    logger.bind(module="etl").info("开始加载 Tushare 交易日历 raw: 路径={}", raw_path)
     raw_df = read_raw_csv(raw_path)
     calendar_df = normalize_trade_calendar_df(raw_df, task)
+    logger.bind(module="etl").info(
+        "交易日历标准化完成: 行数={}, 起始日期={}, 结束日期={}",
+        len(calendar_df.index),
+        calendar_df["cal_date"].min() if not calendar_df.empty else "-",
+        calendar_df["cal_date"].max() if not calendar_df.empty else "-",
+    )
 
     manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
     manager.initialize()
     with manager.session() as conn:
+        # 交易日历以目标表为事实源, 同一范围重跑时直接覆盖旧数据。
         if task.exchange:
             delete_where = "exchange = ? AND cal_date BETWEEN ? AND ?"
             delete_params: Sequence[Any] = [task.exchange.upper(), task.start_date, task.end_date]
@@ -78,6 +95,10 @@ def load_trade_calendar(config: QuantConfig, task: ETLTask) -> int:
             delete_where=delete_where,
             delete_params=delete_params,
         )
+    logger.bind(module="etl").info(
+        "交易日历写入 DuckDB 完成: 表=dim_trade_calendar, 行数={}",
+        row_count,
+    )
     return row_count
 
 

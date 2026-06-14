@@ -50,6 +50,14 @@ def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> list
 
 def fetch_raw_data(config: QuantConfig, task: ETLTask) -> Path:
     """根据 (source, dataset) 拉取 DataFrame 并写入 raw CSV。"""
+    logger.bind(module="etl").info(
+        "开始拉取原始数据: dataset={}, source={}, start_date={}, end_date={}, exchange={}",
+        task.dataset,
+        task.source,
+        task.start_date,
+        task.end_date,
+        task.exchange or "-",
+    )
     if task.source == "tushare":
         df = _fetch_tushare_raw(config, task)
     else:

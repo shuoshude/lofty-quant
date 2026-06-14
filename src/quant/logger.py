@@ -29,7 +29,8 @@ def setup_logger(
 
     logger.remove()
     if enable_console:
-        logger.add(sys.stderr, level=level, format=LOG_FORMAT, enqueue=True)
+        # 控制台日志同步写入, 避免测试或短任务退出时异步队列写到已关闭的 stderr。
+        logger.add(sys.stderr, level=level, format=LOG_FORMAT)
 
     logger.add(
         log_dir / "lofty-quant_{time:YYYY-MM-DD}.log",

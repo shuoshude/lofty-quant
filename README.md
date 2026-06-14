@@ -1,6 +1,6 @@
 # lofty-quant
 
-个人 A 股量化交易系统。当前项目处于基础设施搭建阶段，已经完成项目骨架、TOML 配置加载、Loguru 日志配置，以及 A 股日线研究版 DuckDB 数据层；ETL、因子、策略、回测等模块后续按设计文档逐步实现。
+个人 A 股量化交易系统。当前项目已经完成项目骨架、TOML 配置加载、Loguru 日志配置、A 股日线研究版 DuckDB 数据层，以及 `Tushare -> raw CSV -> DuckDB` 的交易日历最小 ETL 链路；因子、策略、回测和更多行情数据后续按实际使用逐步实现。
 
 ## 技术栈
 
@@ -29,7 +29,7 @@
 │   ├── config.py                     # 统一配置加载
 │   ├── logger.py                     # 统一日志配置
 │   ├── data/                         # DuckDB schema、数据模型和查询入口
-│   ├── etl/                          # ETL 通用入口契约和任务编排
+│   ├── etl/                          # 轻量 ETL fetch/load、数据源适配和存储工具
 │   ├── features/                     # 因子工程占位
 │   ├── strategy/                     # 策略层占位
 │   ├── backtest/                     # 回测引擎占位
@@ -108,14 +108,14 @@ from loguru import logger
 from quant.logger import setup_logger
 
 setup_logger()
-logger.info("system started")
+logger.info("系统启动")
 ```
 
 如果需要写入模块专用日志，可以用 Loguru 的 `bind()` 绑定结构化字段。当前 `module="etl"` 会额外写入 ETL 专用日志文件：
 
 ```python
 etl_logger = logger.bind(module="etl")
-etl_logger.info("etl started")
+etl_logger.info("ETL 任务启动")
 ```
 
 默认日志目录来自配置：
@@ -250,11 +250,13 @@ ETL 分为两个阶段：
 ```bash
 uv run python scripts/run_etl.py fetch trade-calendar \
   --source tushare \
+  --exchange SSE \
   --start-date 20240101 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py load trade-calendar \
   --source tushare \
+  --exchange SSE \
   --start-date 20240101 \
   --end-date 20240131
 ```
@@ -262,12 +264,13 @@ uv run python scripts/run_etl.py load trade-calendar \
 生命周期命令负责编排阶段：
 
 ```bash
-uv run python scripts/run_etl.py backfill daily-ohlcv \
+uv run python scripts/run_etl.py backfill trade-calendar \
   --source tushare \
-  --start-date 20200101 \
-  --end-date 20241231
+  --exchange SSE \
+  --start-date 20250614 \
+  --end-date 20260614
 
-uv run python scripts/run_etl.py status daily-ohlcv \
+uv run python scripts/run_etl.py status trade-calendar \
   --source tushare
 ```
 
@@ -278,6 +281,11 @@ uv run python scripts/run_etl.py status daily-ohlcv \
 - `backfill`：历史回填，必须显式传入日期范围，按 `fetch -> load` 执行。
 - `status`：直接从目标表或 processed 数据聚合当前真实状态。
 
+当前已支持：
+
+- `trade-calendar + tushare`：拉取 Tushare 交易日历，保存 raw CSV，加载到 DuckDB `dim_trade_calendar`，并通过 `status` 查询目标表真实状态。
+- `daily-ohlcv`：保留 raw/processed 路径约定和数据模型，具体数据源拉取与加载逻辑待接入。
+
 raw 层约定使用数据源接口返回的 `pandas.DataFrame` 原样保存为 CSV：
 
 ```text
@@ -285,19 +293,21 @@ data/raw/tushare/trade-calendar/trade-calendar_tushare.csv
 data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240101_20240131.csv
 ```
 
-交易日历这类小维表使用单文件 raw；日线行情这类持续增长的数据集按年月分区。遇到未实现的数据集时, CLI 会返回中文错误：
+交易日历这类小维表使用单文件 raw；日线行情这类持续增长的数据集按年月分区。raw 文件是 fetch 阶段的输入缓存，不代表当前完整数据状态；DuckDB 表或 processed Parquet 才是 load 后的事实源。
+
+遇到未实现的数据集时, CLI 会返回中文错误：
 
 ```text
 暂未实现数据集: dataset=..., source=...
 ```
 
-当前优先跑通 `trade-calendar + tushare` 的最小链路, 后续再根据真实需要恢复 `sync` 或跨源校验。
+暂不维护 ETL 状态表作为判断依据。`etl_manifest` 只做兼容保留，业务状态查询以目标数据实时聚合为准；后续接入日线行情时，也优先从 processed Parquet 或 DuckDB view 计算覆盖范围和缺失交易日。
 
 ## 常用命令
 
 ```bash
 make install      # uv sync --all-extras
-make etl-status   # uv run python scripts/run_etl.py status daily-ohlcv --source tushare
+make etl-status   # uv run python scripts/run_etl.py status trade-calendar --source tushare
 make test         # uv run pytest
 make lint         # uv run ruff check src/ tests/
 make format       # uv run ruff format . && uv run ruff check --fix src/ tests/
@@ -324,12 +334,14 @@ uv run mypy src/
 - A 股日线研究版 DuckDB schema
 - Pydantic 数据模型
 - Repository 查询入口
-- ETL 生命周期入口
+- 轻量 ETL 入口
+- Tushare 交易日历 fetch/load/status 最小链路
 - 基础测试覆盖
 
 待实现：
 
-- ETL 读取、清洗、转换、加载
+- Tushare 日线行情 fetch/load
+- AkShare、MiniQMT 等更多数据源适配
 - 技术指标和因子 pipeline
 - 策略基类和信号生成
 - A 股回测撮合、组合、绩效指标
