@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,6 +52,28 @@ def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> Path
     return partition_dir / filename
 
 
+def iter_raw_partition_dirs(raw_dir: Path, task: ETLTask) -> Iterable[Path]:
+    """按任务日期范围迭代 raw 月分区目录。"""
+    base_dir = raw_dir.expanduser().resolve() / task.source / task.dataset
+    for partition_date in _iter_months(task.start_date, task.end_date):
+        yield base_dir / f"year={partition_date:%Y}" / f"month={partition_date:%m}"
+
+
+def parse_daily_raw_file_date(path: Path, task: ETLTask) -> date | None:
+    """从 daily raw 文件名中解析交易日。"""
+    prefix = f"{task.dataset}_{task.source}_"
+    if not path.stem.startswith(prefix):
+        return None
+
+    date_text = path.stem.removeprefix(prefix)
+    if len(date_text) != 8 or not date_text.isdigit():
+        return None
+    try:
+        return datetime.strptime(date_text, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
 def is_single_file_raw_dataset(task: ETLTask) -> bool:
     """判断数据集 raw 是否使用单文件布局。"""
     return task.dataset in SINGLE_FILE_RAW_DATASETS
@@ -66,3 +90,19 @@ def resolve_log_dir(log_dir: Path | str | None, config: QuantConfig) -> Path:
         return config.paths.log_dir
 
     return resolve_path(log_dir, get_project_root())
+
+
+def _iter_months(start_date: date, end_date: date) -> Iterable[date]:
+    """按月迭代日期范围。"""
+    if start_date > end_date:
+        raise ValueError("开始日期不能晚于结束日期")
+
+    year = start_date.year
+    month = start_date.month
+    while (year, month) <= (end_date.year, end_date.month):
+        yield date(year, month, 1)
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1

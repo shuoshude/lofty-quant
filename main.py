@@ -1,17 +1,17 @@
-from datetime import date
-
 from loguru import logger
 
 from quant.config import load_config
-from quant.etl import ETLTask, fetch_raw_data
+from quant.data.db import DuckDBManager
 from quant.logger import setup_logger
-from quant.data.db import DuckDBManager 
 
 
 def main() -> None:
     setup_logger()
     config = load_config()
     logger.info("测试")
+    # 如需临时测试 fetch, 同时恢复:
+    # from datetime import date
+    # from quant.etl import ETLTask, fetch_raw_data
     # task = ETLTask(
     #     source="tushare",
     #     dataset="trade-calendar",
@@ -20,7 +20,10 @@ def main() -> None:
     #     exchange="SSE",
     # )
     # fetch_raw_data(config, task)
-    manager = DuckDBManager(db_path=config.paths.database_path, processed_dir=config.paths.processed_dir)
+    manager = DuckDBManager(
+        db_path=config.paths.database_path,
+        processed_dir=config.paths.processed_dir,
+    )
     manager.initialize()
 
 

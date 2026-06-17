@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 from duckdb import DuckDBPyConnection
 
@@ -118,6 +118,27 @@ class QuantRepository:
             """,
             [exchange, start, end],
         )
+
+    def get_open_trade_dates(
+        self,
+        start: date,
+        end: date,
+        *,
+        exchange: str = "SSE",
+    ) -> list[date]:
+        """按日期排序返回指定交易所开市日。"""
+        rows = self._conn.execute(
+            """
+            SELECT cal_date
+            FROM dim_trade_calendar
+            WHERE exchange = ?
+              AND is_open = TRUE
+              AND cal_date BETWEEN ? AND ?
+            ORDER BY cal_date
+            """,
+            [exchange, start, end],
+        ).fetchall()
+        return [cast(date, row[0]) for row in rows]
 
     def _fetch_dicts(self, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
         """执行查询并以字典列表返回结果。"""

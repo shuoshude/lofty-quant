@@ -106,11 +106,10 @@ def test_tushare_source_fetches_daily_ohlcv_from_open_trade_dates(
         exchange="SSE",
     )
 
-    frames_by_date = TushareClient(config).fetch_tushare_raw(task)
+    frames_by_date = dict(TushareClient(config).fetch_daily_ohlcv(task))
 
     assert daily_calls == ["20240102", "20240104"]
     assert sleep_calls == ["sleep", "sleep"]
-    assert isinstance(frames_by_date, dict)
     assert list(frames_by_date) == [date(2024, 1, 2), date(2024, 1, 4)]
     assert frames_by_date[date(2024, 1, 2)]["trade_date"].tolist() == ["20240102"]
     assert frames_by_date[date(2024, 1, 4)]["trade_date"].tolist() == ["20240104"]
@@ -139,9 +138,8 @@ def test_tushare_source_daily_ohlcv_returns_empty_columns(
         exchange="SSE",
     )
 
-    frames_by_date = TushareClient(config).fetch_tushare_raw(task)
+    frames_by_date = dict(TushareClient(config).fetch_daily_ohlcv(task))
 
-    assert isinstance(frames_by_date, dict)
     df = frames_by_date[date(2024, 1, 2)]
     assert df.empty
     assert list(df.columns) == list(tushare_source.DAILY_OHLCV_RAW_COLUMNS)
@@ -167,7 +165,7 @@ def test_tushare_source_daily_ohlcv_requires_trade_calendar(
     )
 
     with pytest.raises(ValueError, match="请先加载交易日历后再拉取日线行情"):
-        TushareClient(make_config(tmp_path, token="test-token")).fetch_tushare_raw(task)
+        list(TushareClient(make_config(tmp_path, token="test-token")).fetch_daily_ohlcv(task))
 
 
 def test_tushare_source_requires_token(tmp_path: Path) -> None:

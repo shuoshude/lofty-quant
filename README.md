@@ -290,7 +290,7 @@ uv run python scripts/run_etl.py load daily-ohlcv \
 uv run python scripts/run_etl.py backfill trade-calendar \
   --source tushare \
   --exchange SSE \
-  --start-date 20250614 \
+  --start-date 20200101 \
   --end-date 20260614
 
 uv run python scripts/run_etl.py status trade-calendar \

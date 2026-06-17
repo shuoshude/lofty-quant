@@ -119,34 +119,6 @@ def test_fetch_raw_data_writes_daily_ohlcv_daily_files(monkeypatch, tmp_path: Pa
         exchange="SSE",
     )
 
-    def fake_fetch_tushare_raw(_config, _task):
-        return {
-            date(2024, 1, 2): pd.DataFrame(
-                [
-                    {
-                        "ts_code": "000001.SZ",
-                        "trade_date": "20240102",
-                        "open": 10.0,
-                        "close": 10.2,
-                    }
-                ]
-            ),
-            date(2024, 1, 3): pd.DataFrame(
-                [
-                    {
-                        "ts_code": "000002.SZ",
-                        "trade_date": "20240103",
-                        "open": 20.0,
-                        "close": 20.2,
-                    }
-                ]
-            ),
-        }
-
-    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
-
-    paths = fetch_raw_data(config, task)
-
     expected_paths = (
         config.paths.raw_dir
         / "tushare"
@@ -161,6 +133,34 @@ def test_fetch_raw_data_writes_daily_ohlcv_daily_files(monkeypatch, tmp_path: Pa
         / "month=01"
         / "daily-ohlcv_tushare_20240103.csv",
     )
+
+    def fake_fetch_tushare_raw(_config, _task):
+        yield date(2024, 1, 2), pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20240102",
+                    "open": 10.0,
+                    "close": 10.2,
+                }
+            ]
+        )
+        assert expected_paths[0].exists()
+        yield date(2024, 1, 3), pd.DataFrame(
+            [
+                {
+                    "ts_code": "000002.SZ",
+                    "trade_date": "20240103",
+                    "open": 20.0,
+                    "close": 20.2,
+                }
+            ]
+        )
+
+    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
+
+    paths = fetch_raw_data(config, task)
+
     assert paths == expected_paths
     expected = pd.DataFrame(
         [
@@ -187,11 +187,9 @@ def test_fetch_raw_data_dry_run_does_not_write_daily_ohlcv(monkeypatch, tmp_path
     )
 
     def fake_fetch_tushare_raw(_config, _task):
-        return {
-            date(2024, 1, 2): pd.DataFrame(
-                [{"ts_code": "000001.SZ", "trade_date": "20240102"}],
-            )
-        }
+        yield date(2024, 1, 2), pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240102"}],
+        )
 
     monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
 

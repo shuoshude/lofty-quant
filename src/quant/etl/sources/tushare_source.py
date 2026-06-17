@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
-import duckdb
 import pandas as pd
 import tushare as ts
+from duckdb import CatalogException
 from loguru import logger
 from pandas import DataFrame
 
 from quant.config import QuantConfig
 from quant.data.db import DuckDBManager
+from quant.data.repository import QuantRepository
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import find_raw_files, read_raw_csv
 from quant.etl.storage import replace_duckdb_dataframe
@@ -76,7 +77,7 @@ class TushareClient:
         ts.set_token(self._tushare_token)
         self._pro_api: Any = ts.pro_api()
 
-    def fetch_tushare_raw(self, task: ETLTask) -> DataFrame | dict[date, DataFrame]:
+    def fetch_tushare_raw(self, task: ETLTask) -> DataFrame | Iterator[tuple[date, DataFrame]]:
         """按数据集拉取 Tushare 原始 DataFrame。"""
         if task.dataset == "trade-calendar":
             return self.fetch_trade_calendar(task)
@@ -103,7 +104,7 @@ class TushareClient:
         logger.bind(module="etl").info("Tushare 交易日历接口返回完成: 行数={}", len(df.index))
         return df
 
-    def fetch_daily_ohlcv(self, task: ETLTask) -> dict[date, DataFrame]:
+    def fetch_daily_ohlcv(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
         """按本地交易日历逐日拉取 Tushare 日线行情原始数据。"""
         trade_dates = _load_open_trade_dates(self._config, task)
         logger.bind(module="etl").info(
@@ -112,7 +113,6 @@ class TushareClient:
             len(trade_dates),
         )
 
-        daily_frames: dict[date, DataFrame] = {}
         for trade_date in trade_dates:
             trade_date_text = trade_date.strftime("%Y%m%d")
             _sleep_before_request()
@@ -140,16 +140,15 @@ class TushareClient:
                     "Tushare 日线行情返回为空, 写出空 raw CSV 表头: trade_date={}",
                     trade_date_text,
                 )
-                daily_frames[trade_date] = pd.DataFrame(columns=DAILY_OHLCV_RAW_COLUMNS)
+                yield trade_date, pd.DataFrame(columns=DAILY_OHLCV_RAW_COLUMNS)
                 continue
 
-            daily_frames[trade_date] = df
+            yield trade_date, df
 
         logger.bind(module="etl").info(
-            "Tushare 日线行情按日拉取完成: 文件数量={}",
-            len(daily_frames),
+            "Tushare 日线行情按日拉取完成: 交易日数量={}",
+            len(trade_dates),
         )
-        return daily_frames
 
 
 def load_tushare_data(config: QuantConfig, task: ETLTask) -> int:
@@ -481,26 +480,18 @@ def _load_open_trade_dates(config: QuantConfig, task: ETLTask) -> list[date]:
         raise ValueError(MISSING_TRADE_CALENDAR_MESSAGE)
 
     exchange = (task.exchange or "SSE").upper()
+    manager = DuckDBManager(database_path, config.paths.processed_dir)
     try:
-        conn = duckdb.connect(str(database_path), read_only=True)
-        try:
-            rows = conn.execute(
-                """
-                SELECT cal_date
-                FROM dim_trade_calendar
-                WHERE exchange = ?
-                  AND is_open = TRUE
-                  AND cal_date BETWEEN ? AND ?
-                ORDER BY cal_date
-                """,
-                [exchange, task.start_date, task.end_date],
-            ).fetchall()
-        finally:
-            conn.close()
-    except duckdb.CatalogException as exc:
+        with manager.session() as conn:
+            repository = QuantRepository(conn)
+            trade_dates = repository.get_open_trade_dates(
+                task.start_date,
+                task.end_date,
+                exchange=exchange,
+            )
+    except CatalogException as exc:
         raise ValueError(MISSING_TRADE_CALENDAR_MESSAGE) from exc
 
-    trade_dates = [cast(date, row[0]) for row in rows]
     if not trade_dates:
         raise ValueError(MISSING_TRADE_CALENDAR_MESSAGE)
     return trade_dates

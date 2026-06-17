@@ -77,6 +77,31 @@ def test_repository_returns_trade_calendar(tmp_path: Path) -> None:
     assert [row["is_open"] for row in rows] == [False, True]
 
 
+def test_repository_returns_open_trade_dates_filtered_and_ordered(tmp_path: Path) -> None:
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        conn.execute(
+            """
+            INSERT INTO dim_trade_calendar (exchange, cal_date, is_open, pretrade_date)
+            VALUES
+                ('SSE', DATE '2024-01-04', TRUE, DATE '2024-01-02'),
+                ('SSE', DATE '2024-01-02', TRUE, DATE '2023-12-29'),
+                ('SSE', DATE '2024-01-03', FALSE, DATE '2024-01-02'),
+                ('SZSE', DATE '2024-01-02', TRUE, DATE '2023-12-29'),
+                ('SSE', DATE '2024-01-05', TRUE, DATE '2024-01-04')
+            """
+        )
+        repository = QuantRepository(conn)
+        trade_dates = repository.get_open_trade_dates(
+            date(2024, 1, 2),
+            date(2024, 1, 4),
+            exchange="SSE",
+        )
+
+    assert trade_dates == [date(2024, 1, 2), date(2024, 1, 4)]
+
+
 def initialized_manager(tmp_path: Path) -> DuckDBManager:
     processed_dir = tmp_path / "processed"
     write_parquet(

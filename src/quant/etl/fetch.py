@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -12,9 +12,16 @@ from pandas import DataFrame
 
 from quant.config import QuantConfig
 from quant.etl.etl_model import ETLTask
-from quant.utils import build_raw_path, is_daily_file_raw_dataset, is_single_file_raw_dataset
+from quant.utils import (
+    build_raw_path,
+    is_daily_file_raw_dataset,
+    is_single_file_raw_dataset,
+    iter_raw_partition_dirs,
+    parse_daily_raw_file_date,
+)
 
-RawFetchResult = DataFrame | Mapping[date, DataFrame]
+DailyRawFrames = Iterable[tuple[date, DataFrame]] | Mapping[date, DataFrame]
+RawFetchResult = DataFrame | DailyRawFrames
 
 
 def write_raw_csv(path: Path, df: DataFrame) -> int:
@@ -37,14 +44,7 @@ def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> list
 
     files: list[Path] = []
     pattern = f"*.{suffix.lstrip('.')}"
-    for partition_date in _iter_months(task.start_date, task.end_date):
-        partition_dir = (
-            raw_dir.expanduser().resolve()
-            / task.source
-            / task.dataset
-            / f"year={partition_date:%Y}"
-            / f"month={partition_date:%m}"
-        )
+    for partition_dir in iter_raw_partition_dirs(raw_dir, task):
         if partition_dir.exists():
             files.extend(partition_dir.glob(pattern))
 
@@ -82,16 +82,17 @@ def _write_raw_result(
     raw_result: RawFetchResult,
 ) -> tuple[Path, ...]:
     """将 source 返回的 raw DataFrame 写入一个或多个 CSV。"""
-    if isinstance(raw_result, Mapping):
-        paths: list[Path] = []
-        for trade_date, df in sorted(raw_result.items()):
-            daily_task = task.model_copy(
-                update={"start_date": trade_date, "end_date": trade_date},
-            )
-            paths.append(_write_single_raw_frame(config, daily_task, df))
-        return tuple(paths)
+    if isinstance(raw_result, DataFrame):
+        return (_write_single_raw_frame(config, task, raw_result),)
 
-    return (_write_single_raw_frame(config, task, raw_result),)
+    daily_frames = sorted(raw_result.items()) if isinstance(raw_result, Mapping) else raw_result
+    paths: list[Path] = []
+    for trade_date, df in daily_frames:
+        daily_task = task.model_copy(
+            update={"start_date": trade_date, "end_date": trade_date},
+        )
+        paths.append(_write_single_raw_frame(config, daily_task, df))
+    return tuple(paths)
 
 
 def _write_single_raw_frame(config: QuantConfig, task: ETLTask, df: DataFrame) -> Path:
@@ -117,38 +118,7 @@ def _fetch_tushare_raw(config: QuantConfig, task: ETLTask) -> RawFetchResult:
     return TushareClient(config).fetch_tushare_raw(task)
 
 
-def _iter_months(start_date: date, end_date: date) -> Iterable[date]:
-    """按月迭代日期范围。"""
-    if start_date > end_date:
-        raise ValueError("开始日期不能晚于结束日期")
-
-    year = start_date.year
-    month = start_date.month
-    while (year, month) <= (end_date.year, end_date.month):
-        yield date(year, month, 1)
-        if month == 12:
-            year += 1
-            month = 1
-        else:
-            month += 1
-
-
 def _is_daily_raw_file_in_range(path: Path, task: ETLTask) -> bool:
     """判断日线 raw 文件名中的交易日是否落在任务范围内。"""
-    file_date = _parse_daily_raw_file_date(path, task)
+    file_date = parse_daily_raw_file_date(path, task)
     return file_date is not None and task.start_date <= file_date <= task.end_date
-
-
-def _parse_daily_raw_file_date(path: Path, task: ETLTask) -> date | None:
-    """从 daily-ohlcv_tushare_YYYYMMDD.csv 这类文件名解析交易日。"""
-    prefix = f"{task.dataset}_{task.source}_"
-    if not path.stem.startswith(prefix):
-        return None
-
-    date_text = path.stem.removeprefix(prefix)
-    if len(date_text) != 8 or not date_text.isdigit():
-        return None
-    try:
-        return datetime.strptime(date_text, "%Y%m%d").date()
-    except ValueError:
-        return None
