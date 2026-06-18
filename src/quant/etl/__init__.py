@@ -9,11 +9,9 @@ from quant.etl.fetch import (
 )
 from quant.etl.load import load_raw_data
 from quant.etl.storage import (
-    get_manifest_status,
     insert_duckdb_records,
     replace_duckdb_dataframe,
     replace_duckdb_records,
-    write_manifest,
     write_processed_parquet,
 )
 from quant.utils import build_raw_path
@@ -23,13 +21,11 @@ __all__ = [
     "build_raw_path",
     "fetch_raw_data",
     "find_raw_files",
-    "get_manifest_status",
     "insert_duckdb_records",
     "load_raw_data",
     "read_raw_csv",
     "replace_duckdb_dataframe",
     "replace_duckdb_records",
-    "write_manifest",
     "write_processed_parquet",
     "write_raw_csv",
 ]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from datetime import date
 from pathlib import Path
@@ -20,6 +19,7 @@ from quant.data.db import DuckDBManager
 from quant.data.repository import QuantRepository
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import find_raw_files, read_raw_csv
+from quant.etl.processed import archive_daily_year, write_daily_month_parquet
 from quant.etl.storage import replace_duckdb_dataframe
 from quant.utils import build_raw_path
 
@@ -208,7 +208,7 @@ def load_daily_ohlcv(config: QuantConfig, task: ETLTask) -> int:
     if not raw_files:
         raise FileNotFoundError("未找到日线行情 raw CSV 文件")
 
-    monthly_frames: defaultdict[tuple[int, int], list[DataFrame]] = defaultdict(list)
+    frames: list[DataFrame] = []
     row_count = 0
     for raw_path in raw_files:
         logger.bind(module="etl").info("开始加载 Tushare 日线 raw: 路径={}", raw_path)
@@ -219,28 +219,28 @@ def load_daily_ohlcv(config: QuantConfig, task: ETLTask) -> int:
             continue
 
         row_count += len(normalized_df.index)
-        month_frame = normalized_df.assign(
-            _year=normalized_df["trade_date"].map(lambda value: value.year),
-            _month=normalized_df["trade_date"].map(lambda value: value.month),
-        )
-        for group_key, month_df in month_frame.groupby(["_year", "_month"], sort=True):
-            year, month = cast(tuple[int, int], group_key)
-            monthly_frames[(year, month)].append(
-                month_df.drop(columns=["_year", "_month"]),
-            )
+        frames.append(normalized_df)
 
     if task.dry_run:
         logger.bind(module="etl").info("试运行: 跳过日线 processed 写入, 行数={}", row_count)
         return row_count
 
-    for (year, month), frames in sorted(monthly_frames.items()):
-        month_df = pd.concat(frames, ignore_index=True)
-        output_path = _daily_ohlcv_month_path(config.paths.processed_dir, year, month)
-        _merge_write_daily_ohlcv_parquet(output_path, month_df)
+    if not frames:
+        return row_count
+
+    written_paths = write_daily_month_parquet(
+        config.paths.processed_dir,
+        "ohlcv",
+        pd.concat(frames, ignore_index=True),
+        date_column="trade_date",
+        key_columns=["ts_code", "trade_date"],
+        columns=DAILY_OHLCV_PROCESSED_COLUMNS,
+    )
+    for output_path, written_count in sorted(written_paths.items()):
         logger.bind(module="etl").info(
             "日线行情 processed 月文件写入完成: 路径={}, 新增行数={}",
             output_path,
-            len(month_df.index),
+            written_count,
         )
 
     return row_count
@@ -248,31 +248,17 @@ def load_daily_ohlcv(config: QuantConfig, task: ETLTask) -> int:
 
 def archive_daily_ohlcv_year(config: QuantConfig, year: int) -> Path:
     """将某个已结束年份的月度日线 Parquet 归档为年文件。"""
-    current_year = date.today().year
-    if year >= current_year:
-        raise ValueError("只能归档已结束年份")
-
-    year_dir = config.paths.processed_dir.expanduser().resolve() / "ohlcv" / f"year={year}"
-    month_files = sorted(year_dir.glob(f"month=*/ohlcv_{year}[0-1][0-9].parquet"))
-    if not month_files:
-        raise FileNotFoundError("未找到可归档的月度日线文件")
-
-    year_path = year_dir / f"ohlcv_{year}.parquet"
-    frames: list[DataFrame] = []
-    if year_path.is_file():
-        frames.append(_read_processed_parquet(year_path))
-    frames.extend(_read_processed_parquet(path) for path in month_files)
-
-    archived_df = _deduplicate_daily_ohlcv(pd.concat(frames, ignore_index=True))
-    _write_parquet_atomic(year_path, archived_df)
-    for month_file in month_files:
-        month_file.unlink()
-
+    year_path = archive_daily_year(
+        config.paths.processed_dir,
+        "ohlcv",
+        year,
+        key_columns=["ts_code", "trade_date"],
+        columns=DAILY_OHLCV_PROCESSED_COLUMNS,
+    )
     logger.bind(module="etl").info(
-        "日线行情年度归档完成: year={}, 路径={}, 行数={}",
+        "日线行情年度归档完成: year={}, 路径={}",
         year,
         year_path,
-        len(archived_df.index),
     )
     return year_path
 
@@ -421,56 +407,6 @@ def _parse_numeric_series(
 def _missing_string_mask(series: pd.Series) -> pd.Series:
     """判断字符串 Series 中的空值。"""
     return series.isna() | series.str.lower().isin({"", "nan", "nat", "none", "<na>"})
-
-
-def _daily_ohlcv_month_path(processed_dir: Path, year: int, month: int) -> Path:
-    """生成日线行情月度 processed Parquet 路径。"""
-    return (
-        processed_dir.expanduser().resolve()
-        / "ohlcv"
-        / f"year={year}"
-        / f"month={month:02d}"
-        / f"ohlcv_{year}{month:02d}.parquet"
-    )
-
-
-def _merge_write_daily_ohlcv_parquet(output_path: Path, new_df: DataFrame) -> None:
-    """合并旧月文件和新数据后覆盖写入。"""
-    frames = []
-    if output_path.is_file():
-        frames.append(_read_processed_parquet(output_path))
-    frames.append(new_df)
-
-    merged_df = _deduplicate_daily_ohlcv(pd.concat(frames, ignore_index=True))
-    _write_parquet_atomic(output_path, merged_df)
-
-
-def _deduplicate_daily_ohlcv(df: DataFrame) -> DataFrame:
-    """按 ts_code 和 trade_date 去重, 后出现的数据覆盖先出现的数据。"""
-    if df.empty:
-        return pd.DataFrame(columns=DAILY_OHLCV_PROCESSED_COLUMNS)
-
-    output = df.loc[:, list(DAILY_OHLCV_PROCESSED_COLUMNS)].copy()
-    output["trade_date"] = pd.to_datetime(output["trade_date"]).dt.date
-    output = output.drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
-    return output.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
-
-
-def _read_processed_parquet(path: Path) -> DataFrame:
-    """读取 processed Parquet 为 DataFrame。"""
-    return pd.read_parquet(path)
-
-
-def _write_parquet_atomic(path: Path, df: DataFrame) -> None:
-    """通过临时文件替换的方式写入 Parquet。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f".{path.stem}.tmp{path.suffix}")
-    try:
-        df.to_parquet(temporary_path, index=False)
-        temporary_path.replace(path)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
 
 
 def _load_open_trade_dates(config: QuantConfig, task: ETLTask) -> list[date]:

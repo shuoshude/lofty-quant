@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -112,70 +112,6 @@ def replace_duckdb_dataframe(
     finally:
         conn.unregister(TEMP_DATAFRAME_VIEW)
     return len(selected_df.index)
-
-
-def write_manifest(
-    conn: DuckDBPyConnection,
-    *,
-    dataset: str,
-    trade_date: date | None,
-    source: str,
-    version: str,
-    row_count: int,
-    loaded_at: datetime | None = None,
-) -> None:
-    """写入或覆盖 ETL 加载清单。"""
-    resolved_loaded_at = loaded_at or datetime.now()
-    conn.execute(
-        """
-        DELETE FROM etl_manifest
-        WHERE dataset = ?
-          AND source = ?
-          AND version = ?
-          AND (trade_date = ? OR (trade_date IS NULL AND ? IS NULL))
-        """,
-        [dataset, source, version, trade_date, trade_date],
-    )
-    conn.execute(
-        """
-        INSERT INTO etl_manifest (dataset, trade_date, source, version, row_count, loaded_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        [dataset, trade_date, source, version, row_count, resolved_loaded_at],
-    )
-
-
-def get_manifest_status(
-    conn: DuckDBPyConnection,
-    *,
-    dataset: str,
-    source: str | None = None,
-) -> dict[str, Any]:
-    """读取简单加载状态。"""
-    source_filter = ""
-    params: list[Any] = [dataset]
-    if source is not None:
-        source_filter = "AND source = ?"
-        params.append(source)
-
-    row = conn.execute(
-        f"""
-        SELECT COUNT(*), MAX(trade_date), MAX(loaded_at)
-        FROM etl_manifest
-        WHERE dataset = ?
-        {source_filter}
-        """,
-        params,
-    ).fetchone()
-    if row is None:
-        return {"loaded_count": 0, "latest_trade_date": None, "latest_loaded_at": None}
-
-    loaded_count, latest_trade_date, latest_loaded_at = row
-    return {
-        "loaded_count": int(loaded_count),
-        "latest_trade_date": latest_trade_date,
-        "latest_loaded_at": latest_loaded_at,
-    }
 
 
 def _record_to_dict(record: Mapping[str, Any] | BaseModel) -> dict[str, Any]:

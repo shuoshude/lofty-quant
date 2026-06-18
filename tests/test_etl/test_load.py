@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -12,11 +12,9 @@ from quant.etl.fetch import write_raw_csv
 from quant.etl.load import load_raw_data
 from quant.etl.sources.tushare_source import archive_daily_ohlcv_year
 from quant.etl.storage import (
-    get_manifest_status,
     insert_duckdb_records,
     replace_duckdb_dataframe,
     replace_duckdb_records,
-    write_manifest,
     write_processed_parquet,
 )
 from quant.utils import build_raw_path
@@ -131,36 +129,6 @@ def test_replace_duckdb_dataframe_rejects_invalid_identifier(tmp_path: Path) -> 
             delete_where="ts_code = ?",
             delete_params=["000001.SZ"],
         )
-
-
-def test_write_manifest_and_status(tmp_path: Path) -> None:
-    manager = DuckDBManager(tmp_path / "quant.duckdb", tmp_path / "processed")
-    manager.initialize()
-
-    with manager.session() as conn:
-        write_manifest(
-            conn,
-            dataset="daily-ohlcv",
-            trade_date=date(2024, 1, 2),
-            source="tushare",
-            version="default",
-            row_count=1,
-            loaded_at=datetime(2024, 1, 2, 18, 0, 0),
-        )
-        write_manifest(
-            conn,
-            dataset="daily-ohlcv",
-            trade_date=date(2024, 1, 2),
-            source="tushare",
-            version="default",
-            row_count=2,
-            loaded_at=datetime(2024, 1, 2, 19, 0, 0),
-        )
-        status = get_manifest_status(conn, dataset="daily-ohlcv", source="tushare")
-
-    assert status["loaded_count"] == 1
-    assert status["latest_trade_date"] == date(2024, 1, 2)
-    assert status["latest_loaded_at"] == datetime(2024, 1, 2, 19, 0, 0)
 
 
 def test_load_trade_calendar_from_raw_csv(tmp_path: Path) -> None:
@@ -346,7 +314,7 @@ def test_archive_daily_ohlcv_year_rejects_current_year_and_missing_files(tmp_pat
     with pytest.raises(ValueError, match="只能归档已结束年份"):
         archive_daily_ohlcv_year(config, date.today().year)
 
-    with pytest.raises(FileNotFoundError, match="未找到可归档的月度日线文件"):
+    with pytest.raises(FileNotFoundError, match="未找到可归档的月度日频文件"):
         archive_daily_ohlcv_year(config, date.today().year - 1)
 
 
