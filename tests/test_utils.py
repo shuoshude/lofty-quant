@@ -5,6 +5,7 @@ from quant.config import load_config
 from quant.etl import ETLTask
 from quant.utils import (
     build_raw_path,
+    format_duckdb_path,
     get_project_root,
     iter_raw_partition_dirs,
     parse_daily_raw_file_date,
@@ -53,6 +54,12 @@ def test_resolve_path_expands_home_dir() -> None:
         resolve_path("~/lofty-quant-test", get_project_root())
         == (Path.home() / "lofty-quant-test").resolve()
     )
+
+
+def test_format_duckdb_path_escapes_single_quote(tmp_path: Path) -> None:
+    path = tmp_path / "quote's" / "data.parquet"
+
+    assert format_duckdb_path(path) == path.as_posix().replace("'", "''")
 
 
 def test_build_raw_path_uses_single_file_layout_for_trade_calendar(tmp_path: Path) -> None:

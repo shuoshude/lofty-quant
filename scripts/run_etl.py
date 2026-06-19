@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import date, datetime
-from pathlib import Path
 from typing import Annotated
 
 import duckdb
@@ -17,6 +16,7 @@ from quant.config import QuantConfig, load_config
 from quant.data.db import DuckDBManager
 from quant.etl import ETLTask, fetch_raw_data, load_raw_data
 from quant.logger import setup_logger
+from quant.utils import format_duckdb_path
 
 app = typer.Typer(help="lofty-quant ETL 轻量入口")
 
@@ -244,7 +244,7 @@ def _get_daily_ohlcv_status(config: QuantConfig) -> dict[str, object]:
             "security_count": 0,
         }
 
-    parquet_glob = _duckdb_path(dataset_dir / "**" / "*.parquet")
+    parquet_glob = format_duckdb_path(dataset_dir / "**" / "*.parquet")
     conn = duckdb.connect(":memory:")
     try:
         row = conn.execute(
@@ -336,12 +336,6 @@ def _format_optional_value(value: object) -> str:
     if isinstance(value, date | datetime):
         return value.isoformat()
     return str(value)
-
-
-def _duckdb_path(path: Path) -> str:
-    """将文件系统路径格式化为 DuckDB SQL 字符串字面量。"""
-    return path.as_posix().replace("'", "''")
-
 
 if __name__ == "__main__":
     app()

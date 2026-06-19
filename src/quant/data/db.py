@@ -19,6 +19,8 @@ import duckdb
 from duckdb import DuckDBPyConnection
 from loguru import logger
 
+from quant.utils import format_duckdb_path
+
 
 @dataclass(frozen=True)
 class ParquetDataset:
@@ -131,7 +133,7 @@ class DuckDBManager:
                 CREATE OR REPLACE VIEW {dataset.view_name} AS
                 SELECT *
                 FROM read_parquet(
-                    '{_duckdb_path(parquet_glob)}',
+                    '{format_duckdb_path(parquet_glob)}',
                     union_by_name=true
                 )
                 """
@@ -172,13 +174,13 @@ class DuckDBManager:
         logger.info("已注册 DuckDB 视图 v_daily_adj")
 
         # ------------------------------------------------------------------
-    # 视图刷新（供 ETL 写入新 Parquet 后调用）
+    # 视图刷新: 供 ETL 写入新 Parquet 后调用
     # ------------------------------------------------------------------
     def refresh_views(self) -> None:
         """重新扫描 Parquet 目录并刷新视图。
  
-        ETL 写入新的 Parquet 文件后调用此方法，使新文件纳入
-        视图的扫描范围（CREATE OR REPLACE VIEW 会重新执行 glob）。
+        ETL 写入新的 Parquet 文件后调用此方法, 使新文件纳入
+        视图的扫描范围 (CREATE OR REPLACE VIEW 会重新执行 glob)。
         """
         if self._conn is None:
             self.connect()
@@ -198,8 +200,3 @@ def _relation_exists(conn: DuckDBPyConnection, relation_name: str) -> bool:
         [relation_name],
     ).fetchone()
     return bool(result and result[0])
-
-
-def _duckdb_path(path: Path) -> str:
-    """将文件系统路径格式化为 DuckDB SQL 字符串字面量。"""
-    return path.as_posix().replace("'", "''")

@@ -1,5 +1,6 @@
 from .util import (
     build_raw_path,
+    format_duckdb_path,
     get_project_root,
     is_daily_file_raw_dataset,
     is_single_file_raw_dataset,
@@ -11,6 +12,7 @@ from .util import (
 
 __all__ = [
     "build_raw_path",
+    "format_duckdb_path",
     "get_project_root",
     "is_daily_file_raw_dataset",
     "is_single_file_raw_dataset",

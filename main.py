@@ -1,11 +1,13 @@
+import csv
+from collections.abc import Iterator
+from pathlib import Path
+
 from loguru import logger
 
 from quant.config import load_config
 from quant.data.db import DuckDBManager
 from quant.logger import setup_logger
-from collections.abc import Iterator
-from pathlib import Path
-import csv
+
 
 def main() -> None:
     setup_logger()
@@ -38,7 +40,7 @@ def generate_rows(total: int, batch_size: int) -> Iterator[list[tuple[int, str]]
     """
     分批生成数据。
 
-    每次 yield 一个批次，而不是一次性返回全部数据。
+    每次 yield 一个批次, 而不是一次性返回全部数据。
     """
     batch: list[tuple[int, str]] = []
 

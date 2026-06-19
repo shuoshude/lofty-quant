@@ -30,6 +30,11 @@ def resolve_path(path: Path | str, base_dir: Path) -> Path:
     return (base_dir / expanded).resolve()
 
 
+def format_duckdb_path(path: Path) -> str:
+    """将文件系统路径转为 DuckDB SQL 字符串字面量内容。"""
+    return path.as_posix().replace("'", "''")
+
+
 def build_raw_path(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> Path:
     """生成 ETL raw 文件路径。"""
     normalized_suffix = suffix.lstrip(".")
