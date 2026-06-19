@@ -105,6 +105,10 @@ def _write_single_raw_frame(config: QuantConfig, task: ETLTask, df: DataFrame) -
         )
         return path
 
+    if path.exists() and not task.force:
+        logger.bind(module="etl").info("raw CSV 已存在, 跳过写入: 路径={}", path)
+        return path
+
     row_count = write_raw_csv(path, df)
     logger.bind(module="etl").info("raw CSV 写入完成: 路径={}, 行数={}", path, row_count)
     return path
