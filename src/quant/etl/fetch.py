@@ -20,7 +20,7 @@ from quant.utils import (
     parse_daily_raw_file_date,
 )
 
-DailyRawFrames = Iterable[tuple[date, DataFrame]] | Mapping[date, DataFrame]
+DailyRawFrames = Iterable[tuple[date, DataFrame]]
 RawFetchResult = DataFrame | DailyRawFrames
 
 
@@ -85,9 +85,8 @@ def _write_raw_result(
     if isinstance(raw_result, DataFrame):
         return (_write_single_raw_frame(config, task, raw_result),)
 
-    daily_frames = sorted(raw_result.items()) if isinstance(raw_result, Mapping) else raw_result
     paths: list[Path] = []
-    for trade_date, df in daily_frames:
+    for trade_date, df in raw_result:
         daily_task = task.model_copy(
             update={"start_date": trade_date, "end_date": trade_date},
         )

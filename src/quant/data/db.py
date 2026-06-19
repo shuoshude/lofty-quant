@@ -48,6 +48,8 @@ class DuckDBManager:
 
     def connect(self) -> DuckDBPyConnection:
         """打开 DuckDB 连接。"""
+        if self._conn is not None:
+            return self._conn
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = duckdb.connect(str(self._db_path))
         return self._conn
@@ -56,7 +58,7 @@ class DuckDBManager:
         """创建实体 schema 并注册可用的 Parquet 视图。"""
         with self.session() as conn:
             self._create_tables(conn)
-            self._register_parquet_views(conn)
+            self._register_parquet_views()
             self._create_derived_views(conn)
 
     def close(self) -> None:
@@ -115,15 +117,16 @@ class DuckDBManager:
             """
         )
 
-    def _register_parquet_views(self, conn: DuckDBPyConnection) -> None:
+    def _register_parquet_views(self) -> None:
         """当 Parquet 文件存在时, 注册处理后数据集为 DuckDB 视图。"""
+        assert self._conn is not None
         for dataset in PARQUET_DATASETS:
             parquet_glob = self._processed_dir / dataset.folder_name / "**" / "*.parquet"
             if not list((self._processed_dir / dataset.folder_name).glob("**/*.parquet")):
                 logger.debug("跳过缺失的 Parquet 数据集 {}", dataset.folder_name)
                 continue
 
-            conn.execute(
+            self._conn.execute(
                 f"""
                 CREATE OR REPLACE VIEW {dataset.view_name} AS
                 SELECT *
@@ -167,6 +170,21 @@ class DuckDBManager:
             """
         )
         logger.info("已注册 DuckDB 视图 v_daily_adj")
+
+        # ------------------------------------------------------------------
+    # 视图刷新（供 ETL 写入新 Parquet 后调用）
+    # ------------------------------------------------------------------
+    def refresh_views(self) -> None:
+        """重新扫描 Parquet 目录并刷新视图。
+ 
+        ETL 写入新的 Parquet 文件后调用此方法，使新文件纳入
+        视图的扫描范围（CREATE OR REPLACE VIEW 会重新执行 glob）。
+        """
+        if self._conn is None:
+            self.connect()
+            return
+        self._register_parquet_views()
+        logger.info("Parquet 视图已刷新")
 
 
 def _relation_exists(conn: DuckDBPyConnection, relation_name: str) -> bool:
