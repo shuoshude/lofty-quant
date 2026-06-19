@@ -12,6 +12,7 @@ from quant.etl.sources import tushare_source
 from quant.etl.sources.tushare_source import (
     TushareClient,
     load_trade_calendar,
+    normalize_daily_ohlcv_df,
     normalize_trade_calendar_df,
 )
 from quant.utils import build_raw_path
@@ -227,6 +228,35 @@ def test_normalize_trade_calendar_df_rejects_invalid_date() -> None:
         )
 
 
+def test_normalize_daily_ohlcv_df_rejects_invalid_ts_code() -> None:
+    raw_df = make_daily_raw_df(ts_code="000001")
+
+    with pytest.raises(ValueError, match=r"日线行情数据契约校验失败.*ts_code"):
+        normalize_daily_ohlcv_df(raw_df, make_daily_task())
+
+
+def test_normalize_daily_ohlcv_df_rejects_invalid_price_range() -> None:
+    high_below_low_df = make_daily_raw_df(high="8.0", low="9.0")
+    open_outside_range_df = make_daily_raw_df(open_="12.0", high="11.0", low="9.0")
+
+    with pytest.raises(ValueError, match="high 不能低于 low"):
+        normalize_daily_ohlcv_df(high_below_low_df, make_daily_task())
+
+    with pytest.raises(ValueError, match="open 必须位于 low 和 high 之间"):
+        normalize_daily_ohlcv_df(open_outside_range_df, make_daily_task())
+
+
+def test_normalize_daily_ohlcv_df_rejects_negative_volume_and_amount() -> None:
+    negative_volume_df = make_daily_raw_df(vol="-1.0")
+    negative_amount_df = make_daily_raw_df(amount="-1.0")
+
+    with pytest.raises(ValueError, match=r"日线行情数据契约校验失败.*volume"):
+        normalize_daily_ohlcv_df(negative_volume_df, make_daily_task())
+
+    with pytest.raises(ValueError, match=r"日线行情数据契约校验失败.*amount"):
+        normalize_daily_ohlcv_df(negative_amount_df, make_daily_task())
+
+
 def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Path) -> None:
     config = make_config(tmp_path, token=None)
     task = ETLTask(
@@ -266,6 +296,45 @@ def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Pa
 
     assert row_count == 1
     assert calendar_row == ("SSE", date(2024, 1, 2), True, date(2023, 12, 29))
+
+
+def make_daily_task() -> ETLTask:
+    return ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+    )
+
+
+def make_daily_raw_df(
+    *,
+    ts_code: str = "000001.SZ",
+    trade_date: str = "20240102",
+    open_: str = "10.0",
+    high: str = "11.0",
+    low: str = "9.0",
+    close: str = "10.5",
+    vol: str = "1000.0",
+    amount: str = "10500.0",
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "ts_code": ts_code,
+                "trade_date": trade_date,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "pre_close": "10.0",
+                "change": "0.5",
+                "pct_chg": "5.0",
+                "vol": vol,
+                "amount": amount,
+            }
+        ]
+    )
 
 
 def make_config(tmp_path: Path, *, token: str | None) -> QuantConfig:

@@ -357,7 +357,7 @@ def write_daily_raw(
                     "ts_code": ts_code,
                     "trade_date": trade_date or raw_date.strftime("%Y%m%d"),
                     "open": open_,
-                    "high": "10.5",
+                    "high": "12.0",
                     "low": "9.8",
                     "close": close,
                     "pre_close": "10.0",

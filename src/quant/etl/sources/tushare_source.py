@@ -13,10 +13,12 @@ import tushare as ts
 from duckdb import CatalogException
 from loguru import logger
 from pandas import DataFrame
+from pydantic import ValidationError
 
 from quant.config import QuantConfig
 from quant.data.db import DuckDBManager
 from quant.data.repository import QuantRepository
+from quant.data.schemas import DailyOHLCVRecord
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import find_raw_files, read_raw_csv
 from quant.etl.processed import archive_daily_year, load_daily_raw_csv_to_monthly_parquet
@@ -294,7 +296,38 @@ def normalize_daily_ohlcv_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     output["is_suspended"] = False
     output["is_st"] = False
     output["limit_status"] = "none"
-    return output.loc[:, list(DAILY_OHLCV_PROCESSED_COLUMNS)]
+    return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_PROCESSED_COLUMNS)])
+
+
+def _validate_daily_ohlcv_contract(df: DataFrame) -> DataFrame:
+    """使用项目日线数据契约进行最终校验。"""
+    errors: list[str] = []
+    for row in df.to_dict(orient="records"):
+        row_data = {str(key): value for key, value in row.items()}
+        try:
+            DailyOHLCVRecord(**row_data)
+        except ValidationError as exc:
+            errors.append(_format_daily_ohlcv_validation_error(row_data, exc))
+            if len(errors) >= 3:
+                break
+
+    if errors:
+        raise ValueError(f"日线行情数据契约校验失败: {'; '.join(errors)}")
+    return df
+
+
+def _format_daily_ohlcv_validation_error(row: dict[str, Any], exc: ValidationError) -> str:
+    """格式化 Pydantic 校验错误, 便于定位异常行。"""
+    error_messages = []
+    for error in exc.errors()[:3]:
+        location = ".".join(str(part) for part in error.get("loc", ())) or "-"
+        error_messages.append(f"{location}: {error.get('msg', '-')}")
+
+    return (
+        f"ts_code={row.get('ts_code', '-')}, "
+        f"trade_date={row.get('trade_date', '-')}, "
+        f"错误={', '.join(error_messages)}"
+    )
 
 
 def _require_columns(df: DataFrame, columns: Sequence[str]) -> None:
