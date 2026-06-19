@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import date
 from pathlib import Path
 from types import ModuleType
 
+import pandas as pd
 from typer.testing import CliRunner
 
 from quant.config import load_config
@@ -279,6 +281,34 @@ def test_status_command_reads_daily_ohlcv_processed_state(monkeypatch, tmp_path:
     assert "行情行数: 100" in result.output
     assert "交易日数: 22" in result.output
     assert "证券数: 5" in result.output
+
+
+def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config = load_config(config_dir=make_config_dir(tmp_path))
+    parquet_path = (
+        config.paths.processed_dir
+        / "ohlcv"
+        / "year=2024"
+        / "month=01"
+        / "ohlcv_202401.parquet"
+    )
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": date(2024, 1, 2), "close": 10.0},
+            {"ts_code": "000002.SZ", "trade_date": date(2024, 1, 2), "close": 20.0},
+            {"ts_code": "000001.SZ", "trade_date": date(2024, 1, 3), "close": 10.5},
+        ]
+    ).to_parquet(parquet_path, index=False)
+
+    state = run_etl._get_daily_ohlcv_status(config)
+
+    assert state["start_date"] == date(2024, 1, 2)
+    assert state["end_date"] == date(2024, 1, 3)
+    assert state["row_count"] == 3
+    assert state["trade_date_count"] == 2
+    assert state["security_count"] == 2
 
 
 def patch_runtime(monkeypatch, run_etl: ModuleType, tmp_path: Path) -> None:

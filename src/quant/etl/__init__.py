@@ -8,12 +8,7 @@ from quant.etl.fetch import (
     write_raw_csv,
 )
 from quant.etl.load import load_raw_data
-from quant.etl.storage import (
-    insert_duckdb_records,
-    replace_duckdb_dataframe,
-    replace_duckdb_records,
-    write_processed_parquet,
-)
+from quant.etl.storage import replace_duckdb_dataframe
 from quant.utils import build_raw_path
 
 __all__ = [
@@ -21,11 +16,8 @@ __all__ = [
     "build_raw_path",
     "fetch_raw_data",
     "find_raw_files",
-    "insert_duckdb_records",
     "load_raw_data",
     "read_raw_csv",
     "replace_duckdb_dataframe",
-    "replace_duckdb_records",
-    "write_processed_parquet",
     "write_raw_csv",
 ]

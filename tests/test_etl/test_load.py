@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from pydantic import BaseModel
 
 from quant.config import PathsConfig, ProjectConfig, QuantConfig, SecretsConfig
 from quant.data.db import DuckDBManager
@@ -11,75 +10,8 @@ from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
 from quant.etl.load import load_raw_data
 from quant.etl.sources.tushare_source import archive_daily_ohlcv_year
-from quant.etl.storage import (
-    insert_duckdb_records,
-    replace_duckdb_dataframe,
-    replace_duckdb_records,
-    write_processed_parquet,
-)
+from quant.etl.storage import replace_duckdb_dataframe, replace_table_dataframe
 from quant.utils import build_raw_path
-
-
-class SecurityRecord(BaseModel):
-    ts_code: str
-    symbol: str
-    name: str
-    exchange: str
-
-
-def test_write_processed_parquet_partitions_by_year_and_month(tmp_path: Path) -> None:
-    output_path = write_processed_parquet(
-        tmp_path,
-        dataset="ohlcv",
-        partition_date=date(2024, 1, 2),
-        records=[{"ts_code": "000001.SZ", "trade_date": date(2024, 1, 2)}],
-    )
-
-    assert output_path == tmp_path / "ohlcv" / "year=2024" / "month=01" / "ohlcv_20240102.parquet"
-    assert output_path.exists()
-
-
-def test_insert_and_replace_duckdb_records(tmp_path: Path) -> None:
-    manager = DuckDBManager(tmp_path / "quant.duckdb", tmp_path / "processed")
-    manager.initialize()
-
-    with manager.session() as conn:
-        inserted = insert_duckdb_records(
-            conn,
-            table="dim_security",
-            records=[
-                SecurityRecord(
-                    ts_code="000001.SZ",
-                    symbol="000001",
-                    name="平安银行",
-                    exchange="SZSE",
-                )
-            ],
-            columns=["ts_code", "symbol", "name", "exchange"],
-        )
-        replaced = replace_duckdb_records(
-            conn,
-            table="dim_security",
-            records=[
-                {
-                    "ts_code": "000001.SZ",
-                    "symbol": "000001",
-                    "name": "平安银行A",
-                    "exchange": "SZSE",
-                }
-            ],
-            columns=["ts_code", "symbol", "name", "exchange"],
-            delete_where="ts_code = ?",
-            delete_params=["000001.SZ"],
-        )
-        name = conn.execute(
-            "SELECT name FROM dim_security WHERE ts_code = ?",
-            ["000001.SZ"],
-        ).fetchone()[0]
-
-    assert inserted == 1
-    assert replaced == 1
-    assert name == "平安银行A"
 
 
 def test_replace_duckdb_dataframe(tmp_path: Path) -> None:
@@ -111,6 +43,58 @@ def test_replace_duckdb_dataframe(tmp_path: Path) -> None:
 
     assert row_count == 1
     assert name == "平安银行"
+
+
+def test_replace_table_dataframe_initializes_duckdb_and_replaces_rows(tmp_path: Path) -> None:
+    database_path = tmp_path / "quant.duckdb"
+    processed_dir = tmp_path / "processed"
+
+    first_count = replace_table_dataframe(
+        database_path,
+        processed_dir,
+        table="dim_security",
+        df=pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "symbol": "000001",
+                    "name": "平安银行",
+                    "exchange": "SZSE",
+                }
+            ]
+        ),
+        columns=["ts_code", "symbol", "name", "exchange"],
+        delete_where="exchange = ?",
+        delete_params=["SZSE"],
+    )
+    second_count = replace_table_dataframe(
+        database_path,
+        processed_dir,
+        table="dim_security",
+        df=pd.DataFrame(
+            [
+                {
+                    "ts_code": "000002.SZ",
+                    "symbol": "000002",
+                    "name": "万科A",
+                    "exchange": "SZSE",
+                }
+            ]
+        ),
+        columns=["ts_code", "symbol", "name", "exchange"],
+        delete_where="exchange = ?",
+        delete_params=["SZSE"],
+    )
+
+    manager = DuckDBManager(database_path, processed_dir)
+    with manager.session() as conn:
+        rows = conn.execute(
+            "SELECT ts_code, name FROM dim_security ORDER BY ts_code"
+        ).fetchall()
+
+    assert first_count == 1
+    assert second_count == 1
+    assert rows == [("000002.SZ", "万科A")]
 
 
 def test_replace_duckdb_dataframe_rejects_invalid_identifier(tmp_path: Path) -> None:

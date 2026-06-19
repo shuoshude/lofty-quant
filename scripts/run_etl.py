@@ -7,7 +7,6 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Annotated
 
-import duckdb
 import typer
 from duckdb import DuckDBPyConnection
 from loguru import logger
@@ -16,7 +15,6 @@ from quant.config import QuantConfig, load_config
 from quant.data.db import DuckDBManager
 from quant.etl import ETLTask, fetch_raw_data, load_raw_data
 from quant.logger import setup_logger
-from quant.utils import format_duckdb_path
 
 app = typer.Typer(help="lofty-quant ETL 轻量入口")
 
@@ -182,15 +180,7 @@ def status(
 
 @contextmanager
 def _status_session(config: QuantConfig) -> Generator[DuckDBPyConnection, None, None]:
-    """提供状态查询连接, 已存在的数据库使用只读模式。"""
-    if config.paths.database_path.exists():
-        conn = duckdb.connect(str(config.paths.database_path), read_only=True)
-        try:
-            yield conn
-        finally:
-            conn.close()
-        return
-
+    """提供状态查询连接, 统一走 DuckDBManager 初始化 schema 和视图。"""
     manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
     manager.initialize()
     with manager.session() as conn:
@@ -244,22 +234,18 @@ def _get_daily_ohlcv_status(config: QuantConfig) -> dict[str, object]:
             "security_count": 0,
         }
 
-    parquet_glob = format_duckdb_path(dataset_dir / "**" / "*.parquet")
-    conn = duckdb.connect(":memory:")
-    try:
+    with _status_session(config) as conn:
         row = conn.execute(
-            f"""
+            """
             SELECT
                 MIN(trade_date) AS start_date,
                 MAX(trade_date) AS end_date,
                 COUNT(*) AS row_count,
                 COUNT(DISTINCT trade_date) AS trade_date_count,
                 COUNT(DISTINCT ts_code) AS security_count
-            FROM read_parquet('{parquet_glob}', union_by_name=true)
+            FROM v_daily_ohlcv
             """
         ).fetchone()
-    finally:
-        conn.close()
 
     if row is None:
         return {

@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import cast
 
 import pandas as pd
+from loguru import logger
 from pandas import DataFrame
+
+
+@dataclass(frozen=True)
+class DailyRawLoadResult:
+    """日频 raw 加载到 processed 后的结果。"""
+
+    row_count: int
+    written_paths: dict[Path, int]
 
 
 def build_daily_month_path(
@@ -28,6 +38,51 @@ def build_daily_month_path(
         / f"month={month:02d}"
         / f"{prefix}_{year}{month:02d}.parquet"
     )
+
+
+def load_daily_raw_csv_to_monthly_parquet(
+    raw_files: Iterable[Path],
+    processed_dir: Path,
+    dataset: str,
+    *,
+    read_frame: Callable[[Path], DataFrame],
+    normalize_frame: Callable[[DataFrame], DataFrame],
+    date_column: str,
+    key_columns: Sequence[str],
+    columns: Sequence[str],
+    dry_run: bool = False,
+    filename_prefix: str | None = None,
+) -> DailyRawLoadResult:
+    """读取日频 raw CSV, 标准化后写入月度 processed Parquet。"""
+    frames: list[DataFrame] = []
+    row_count = 0
+    for raw_path in raw_files:
+        logger.bind(module="etl").info("开始加载日频 raw: 路径={}", raw_path)
+        normalized_df = normalize_frame(read_frame(raw_path))
+        if normalized_df.empty:
+            logger.bind(module="etl").info("日频 raw 为空, 跳过 processed 写入: 路径={}", raw_path)
+            continue
+
+        row_count += len(normalized_df.index)
+        frames.append(normalized_df)
+
+    if dry_run:
+        logger.bind(module="etl").info("试运行: 跳过日频 processed 写入, 行数={}", row_count)
+        return DailyRawLoadResult(row_count=row_count, written_paths={})
+
+    if not frames:
+        return DailyRawLoadResult(row_count=row_count, written_paths={})
+
+    written_paths = write_daily_month_parquet(
+        processed_dir,
+        dataset,
+        pd.concat(frames, ignore_index=True),
+        date_column=date_column,
+        key_columns=key_columns,
+        columns=columns,
+        filename_prefix=filename_prefix,
+    )
+    return DailyRawLoadResult(row_count=row_count, written_paths=written_paths)
 
 
 def write_daily_month_parquet(
@@ -73,7 +128,7 @@ def write_daily_month_parquet(
             columns=columns,
             date_column=date_column,
         )
-        _write_parquet_atomic(output_path, merged_df)
+        write_parquet_atomic(output_path, merged_df)
         written[output_path] = len(month_df.index)
     return written
 
@@ -108,7 +163,7 @@ def archive_daily_year(
         key_columns=key_columns,
         columns=columns,
     )
-    _write_parquet_atomic(year_path, archived_df)
+    write_parquet_atomic(year_path, archived_df)
     for month_file in month_files:
         month_file.unlink()
     return year_path
@@ -174,7 +229,7 @@ def _read_parquet(path: Path) -> DataFrame:
     return pd.read_parquet(path)
 
 
-def _write_parquet_atomic(path: Path, df: DataFrame) -> None:
+def write_parquet_atomic(path: Path, df: DataFrame) -> None:
     """通过临时文件替换的方式写入 Parquet。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f".{path.stem}.tmp{path.suffix}")

@@ -19,8 +19,8 @@ from quant.data.db import DuckDBManager
 from quant.data.repository import QuantRepository
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import find_raw_files, read_raw_csv
-from quant.etl.processed import archive_daily_year, write_daily_month_parquet
-from quant.etl.storage import replace_duckdb_dataframe
+from quant.etl.processed import archive_daily_year, load_daily_raw_csv_to_monthly_parquet
+from quant.etl.storage import replace_table_dataframe
 from quant.utils import build_raw_path
 
 TUSHARE_REQUEST_SLEEP_SECONDS = 0.2
@@ -176,25 +176,23 @@ def load_trade_calendar(config: QuantConfig, task: ETLTask) -> int:
         calendar_df["cal_date"].max() if not calendar_df.empty else "-",
     )
 
-    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
-    manager.initialize()
-    with manager.session() as conn:
-        # 交易日历以目标表为事实源, 同一范围重跑时直接覆盖旧数据。
-        if task.exchange:
-            delete_where = "exchange = ? AND cal_date BETWEEN ? AND ?"
-            delete_params: Sequence[Any] = [task.exchange.upper(), task.start_date, task.end_date]
-        else:
-            delete_where = "cal_date BETWEEN ? AND ?"
-            delete_params = [task.start_date, task.end_date]
+    # 交易日历以目标表为事实源, 同一范围重跑时直接覆盖旧数据。
+    if task.exchange:
+        delete_where = "exchange = ? AND cal_date BETWEEN ? AND ?"
+        delete_params: Sequence[Any] = [task.exchange.upper(), task.start_date, task.end_date]
+    else:
+        delete_where = "cal_date BETWEEN ? AND ?"
+        delete_params = [task.start_date, task.end_date]
 
-        row_count = replace_duckdb_dataframe(
-            conn,
-            table="dim_trade_calendar",
-            df=calendar_df,
-            columns=["exchange", "cal_date", "is_open", "pretrade_date"],
-            delete_where=delete_where,
-            delete_params=delete_params,
-        )
+    row_count = replace_table_dataframe(
+        config.paths.database_path,
+        config.paths.processed_dir,
+        table="dim_trade_calendar",
+        df=calendar_df,
+        columns=["exchange", "cal_date", "is_open", "pretrade_date"],
+        delete_where=delete_where,
+        delete_params=delete_params,
+    )
     logger.bind(module="etl").info(
         "交易日历写入 DuckDB 完成: 表=dim_trade_calendar, 行数={}",
         row_count,
@@ -208,42 +206,25 @@ def load_daily_ohlcv(config: QuantConfig, task: ETLTask) -> int:
     if not raw_files:
         raise FileNotFoundError("未找到日线行情 raw CSV 文件")
 
-    frames: list[DataFrame] = []
-    row_count = 0
-    for raw_path in raw_files:
-        logger.bind(module="etl").info("开始加载 Tushare 日线 raw: 路径={}", raw_path)
-        raw_df = read_raw_csv(raw_path)
-        normalized_df = normalize_daily_ohlcv_df(raw_df, task)
-        if normalized_df.empty:
-            logger.bind(module="etl").info("日线 raw 为空, 跳过 processed 写入: 路径={}", raw_path)
-            continue
-
-        row_count += len(normalized_df.index)
-        frames.append(normalized_df)
-
-    if task.dry_run:
-        logger.bind(module="etl").info("试运行: 跳过日线 processed 写入, 行数={}", row_count)
-        return row_count
-
-    if not frames:
-        return row_count
-
-    written_paths = write_daily_month_parquet(
+    result = load_daily_raw_csv_to_monthly_parquet(
+        raw_files,
         config.paths.processed_dir,
         "ohlcv",
-        pd.concat(frames, ignore_index=True),
+        read_frame=read_raw_csv,
+        normalize_frame=lambda raw_df: normalize_daily_ohlcv_df(raw_df, task),
         date_column="trade_date",
         key_columns=["ts_code", "trade_date"],
         columns=DAILY_OHLCV_PROCESSED_COLUMNS,
+        dry_run=task.dry_run,
     )
-    for output_path, written_count in sorted(written_paths.items()):
+    for output_path, written_count in sorted(result.written_paths.items()):
         logger.bind(module="etl").info(
             "日线行情 processed 月文件写入完成: 路径={}, 新增行数={}",
             output_path,
             written_count,
         )
 
-    return row_count
+    return result.row_count
 
 
 def archive_daily_ohlcv_year(config: QuantConfig, year: int) -> Path:
