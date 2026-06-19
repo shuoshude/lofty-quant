@@ -1,15 +1,15 @@
 # lofty-quant
 
-个人 A 股量化交易系统。当前项目已经完成项目骨架、TOML 配置加载、Loguru 日志配置、A 股日线研究版 DuckDB 数据层，以及 `Tushare -> raw CSV -> DuckDB/Parquet` 的交易日历和日线行情轻量 ETL 链路；因子、策略、回测和更多数据源后续按实际使用逐步实现。
+个人 A 股量化交易系统。已完成项目骨架、多层 TOML 配置、Loguru 日志,以及 `Tushare -> raw CSV -> DuckDB/Parquet` 的交易日历和日线行情轻量 ETL 链路(实测可拉取 13 年交易日历 + 4 年多全市场日线);因子、策略、回测等量化模块按实际使用逐步实现。
 
 ## 技术栈
 
 - Python 3.12
-- uv
-- tomllib + Pydantic Settings + Pydantic
-- Loguru
-- DuckDB / Parquet / Polars
-- pytest / ruff / mypy
+- uv(包管理,禁止 pip)
+- tomllib + Pydantic v2 + Pydantic Settings(配置)
+- Loguru(日志)
+- DuckDB + Parquet + Pandas(存储与数据处理)
+- pytest / ruff / mypy(质量工具)
 
 ## 项目结构
 
@@ -19,23 +19,27 @@
 │   ├── settings.toml                 # 默认 TOML 配置
 │   └── settings.local.example.toml   # 本地覆盖配置模板
 ├── data/
-│   ├── raw/                          # 原始数据目录
-│   ├── processed/                    # 处理后数据目录
+│   ├── raw/                          # 原始数据目录(fetch 写入)
+│   ├── processed/                    # 处理后数据目录(load 写入)
 │   └── db/                           # DuckDB 数据库目录
-├── log/                              # 运行日志目录，默认不提交
+├── log/                              # 运行日志目录(默认不提交)
 ├── notebooks/                        # 研究 notebook
-├── scripts/                          # CLI/任务入口
+├── scripts/
+│   ├── run_etl.py                    # ETL CLI 入口
+│   └── run_backtest.py               # 回测入口(占位)
 ├── src/quant/
 │   ├── config.py                     # 统一配置加载
 │   ├── logger.py                     # 统一日志配置
-│   ├── data/                         # DuckDB schema、数据模型和查询入口
-│   ├── etl/                          # 轻量 ETL fetch/load、数据源适配和存储工具
-│   ├── features/                     # 因子工程占位
-│   ├── strategy/                     # 策略层占位
-│   ├── backtest/                     # 回测引擎占位
-│   ├── risk/                         # 风控模块占位
-│   └── analysis/                     # 分析输出占位
-└── tests/                            # 单元测试
+│   ├── data/                         # DuckDB schema、数据契约和查询入口
+│   ├── etl/                          # 轻量 ETL(fetch/load/processed/storage)
+│   │   └── sources/tushare_source.py # Tushare 数据源适配器
+│   ├── features/                     # 因子工程(占位)
+│   ├── strategy/                     # 策略层(占位)
+│   ├── backtest/                     # 回测引擎(占位)
+│   ├── risk/                         # 风控模块(占位)
+│   └── analysis/                     # 分析输出(占位)
+├── tests/                            # 单元测试(87 个,覆盖率 94%)
+└── lofty-quant-design.md             # 模块设计文档
 ```
 
 ## 安装
@@ -46,17 +50,11 @@
 uv sync --all-extras
 ```
 
-运行当前入口：
-
-```bash
-uv run python main.py
-```
-
 ## 配置
 
-配置使用 TOML 作为主格式，统一从 `quant.config.load_config()` 读取。普通配置由标准库 `tomllib` 读取并递归合并，机密只通过 Pydantic Settings 从环境变量读取。
+配置使用 TOML 作为主格式,统一从 `quant.config.load_config()` 读取。普通配置由标准库 `tomllib` 读取并递归合并,机密只通过 Pydantic Settings 从环境变量读取。
 
-加载顺序：
+加载顺序(后者覆盖前者):
 
 ```text
 config/settings.toml
@@ -65,28 +63,28 @@ config/settings.toml
 → LOFTY_QUANT__SECRETS__... 环境变量
 ```
 
-默认环境为 `default`。如果要启用某个环境覆盖文件，例如 `config/settings.research.toml`：
+默认环境为 `default`。如要启用某个环境覆盖文件(例如 `config/settings.research.toml`):
 
 ```bash
 export LOFTY_QUANT_ENV=research
 ```
 
-本地覆盖配置：
+本地覆盖配置:
 
 ```bash
 cp config/settings.local.example.toml config/settings.local.toml
 ```
 
-`config/settings.local.toml` 已被 `.gitignore` 忽略，适合放本机路径等非机密覆盖项。
+`config/settings.local.toml` 已被 `.gitignore` 忽略,适合放本机路径等非机密覆盖项。
 
-机密环境变量示例：
+机密环境变量示例:
 
 ```bash
 export LOFTY_QUANT__SECRETS__TUSHARE_TOKEN=your-token
 export LOFTY_QUANT__SECRETS__AKSHARE_TOKEN=your-token
 ```
 
-代码中读取配置：
+代码中读取配置:
 
 ```python
 from quant.config import load_config
@@ -100,7 +98,7 @@ tushare_token = config.secrets.tushare_token
 
 ## 日志
 
-日志使用 Loguru。`loguru.logger` 本身是全局单例，项目只提供 `setup_logger()` 负责统一配置。
+日志使用 Loguru。`loguru.logger` 本身是全局单例,项目只提供 `setup_logger()` 负责统一配置。
 
 ```python
 from loguru import logger
@@ -111,38 +109,30 @@ setup_logger()
 logger.info("系统启动")
 ```
 
-如果需要写入模块专用日志，可以用 Loguru 的 `bind()` 绑定结构化字段。当前 `module="etl"` 会额外写入 ETL 专用日志文件：
+如需写入模块专用日志,用 Loguru 的 `bind()` 绑定结构化字段。当前 `module="etl"` 会额外写入 ETL 专用日志文件:
 
 ```python
 etl_logger = logger.bind(module="etl")
 etl_logger.info("ETL 任务启动")
 ```
 
-默认日志目录来自配置：
+日志文件规则:
 
-```toml
-[paths]
-log_dir = "log"
-```
-
-日志文件规则：
-
-- 默认保存到项目根目录 `log/`
-- 通用日志文件：`lofty-quant_YYYY-MM-DD.log`
-- ETL 专用文件：`etl_YYYY-MM-DD.log`
+- 默认保存到配置中的 `log_dir`(默认 `log/`)
+- 通用日志文件:`lofty-quant_YYYY-MM-DD.log`
+- ETL 专用文件:`etl_YYYY-MM-DD.log`
 - 单文件超过 10MB 自动分块
-- 日期来自 logger 初始化时的 `{time:YYYY-MM-DD}`，适合当前脚本/任务型运行方式
 - 日志格式包含时间戳、日志级别、模块/函数/行号和消息
 
 ## 数据层 / DuckDB Schema
 
-数据层采用混合模式：小型维表和元数据表写入 DuckDB，大型时序数据以 Parquet 保存，再由 DuckDB 注册成视图查询。
+数据层采用混合存储模式:小型维表和元数据写入 DuckDB 原生表,大型时序数据以 Parquet 保存,再由 DuckDB 注册成视图查询。
 
-核心文件：
+核心文件:
 
-- `src/quant/data/schemas.py`：Pydantic 数据契约，校验 `ts_code`、OHLC、成交量、涨跌停状态、财务公告日期等。
-- `src/quant/data/db.py`：DuckDB 连接和 schema 初始化，创建实体表并注册 Parquet 视图。
-- `src/quant/data/repository.py`：唯一公开查询入口，业务代码不要在其他模块直接写 SQL。
+- `src/quant/data/schemas.py`:Pydantic 数据契约,校验 `ts_code`、OHLC 价格区间、成交量、涨跌停状态等。日线 load 末尾会用 `DailyOHLCVRecord` 对每行做最终校验。
+- `src/quant/data/db.py`:DuckDB 连接和 schema 初始化,创建实体表并注册 Parquet 视图。
+- `src/quant/data/repository.py`:唯一公开查询入口,业务代码不要在其他模块直接写 SQL。
 
 ### 初始化数据库
 
@@ -159,13 +149,13 @@ manager = DuckDBManager(
 manager.initialize()
 ```
 
-`initialize()` 会创建以下 DuckDB 实体表：
+`initialize()` 会创建以下 DuckDB 实体表:
 
-- `dim_security`：股票主数据
-- `dim_trade_calendar`：交易日历
-- `etl_manifest`：兼容保留的旧 ETL 状态表, 当前业务流程不依赖它
+- `dim_security`:股票主数据(占位,尚未接入数据源)
+- `dim_trade_calendar`:交易日历
+- `etl_manifest`:兼容保留的旧 ETL 状态表,当前业务流程不写入也不依赖它
 
-如果 `data/processed/` 下存在对应 Parquet 文件，还会自动注册视图：
+如果 `data/processed/` 下存在对应 Parquet 文件,还会自动注册视图:
 
 ```text
 data/processed/ohlcv/         -> v_daily_ohlcv
@@ -176,23 +166,23 @@ data/processed/fundamental/   -> v_fundamental
 data/processed/factors/       -> v_factors
 ```
 
-当 `v_daily_ohlcv` 和 `v_adj_factor` 同时存在时，会额外创建 `v_daily_adj`，用于查询复权价格。
+当 `v_daily_ohlcv` 和 `v_adj_factor` 同时存在时,会额外创建 `v_daily_adj`,用于查询复权价格。
 
 ### Parquet 分区约定
 
-日线行情 load 时先写月度 Parquet 文件：
+日线行情 load 时按月写入 Parquet 文件:
 
 ```text
-data/processed/ohlcv/year=2024/month=01/*.parquet
+data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet
 ```
 
-已结束年份可以通过独立归档命令合并为年文件：
+已结束年份可以通过独立归档命令合并为年文件:
 
 ```text
 data/processed/ohlcv/year=2024/ohlcv_2024.parquet
 ```
 
-归档成功后会删除对应月文件，避免 DuckDB 视图重复读取同一批行情数据。复权因子、每日指标、指数行情和因子仍按交易日期年月分区：
+归档成功后会删除对应月文件,避免 DuckDB 视图重复读取同一批行情数据。其他数据集(复权因子、每日指标、指数行情、因子)按交易日期年月分区:
 
 ```text
 data/processed/adj_factor/year=2024/month=01/*.parquet
@@ -201,7 +191,7 @@ data/processed/index_daily/year=2024/month=01/*.parquet
 data/processed/factors/year=2024/month=01/*.parquet
 ```
 
-财务数据按公告日期 `ann_date` 分区，避免回测时误用未来数据：
+财务数据按公告日期 `ann_date` 分区,避免回测时误用未来数据:
 
 ```text
 data/processed/fundamental/year=2024/month=04/*.parquet
@@ -209,7 +199,7 @@ data/processed/fundamental/year=2024/month=04/*.parquet
 
 ### 查询数据
 
-所有查询建议通过 `QuantRepository`：
+所有查询建议通过 `QuantRepository`:
 
 ```python
 from datetime import date
@@ -229,34 +219,35 @@ with manager.session() as conn:
         "000001.SZ",
         date(2024, 1, 1),
         date(2024, 1, 31),
-        adjusted=True,
+        adjusted=False,
     )
 
-    factors = repo.get_factors(
+    trade_dates = repo.get_open_trade_dates(
+        date(2024, 1, 1),
         date(2024, 1, 31),
-        ["momentum_20d"],
-        factor_version="v1",
+        exchange="SSE",
     )
 ```
 
-常用查询接口：
+常用查询接口:
 
-- `get_daily_bars(ts_code, start, end, adjusted=True)`：查询单只股票日线，默认返回复权视图。
-- `get_cross_section(trade_date, fields, exclude_suspended=False)`：查询某日截面，可选择排除停牌股票。
-- `get_factors(trade_date, factor_names, factor_version=None)`：查询因子值。
-- `get_trade_calendar(start, end, exchange="SSE")`：查询交易日历。
+- `get_daily_bars(ts_code, start, end, adjusted=True)`:查询单只股票日线。`adjusted=True` 走 `v_daily_adj`(需先加载复权因子),否则走 `v_daily_ohlcv`。
+- `get_cross_section(trade_date, fields, exclude_suspended=False)`:查询某日截面,可选择排除停牌股票。
+- `get_factors(trade_date, factor_names, factor_version=None)`:查询因子值(依赖 `v_factors` 视图,需先计算并加载因子)。
+- `get_trade_calendar(start, end, exchange="SSE")`:查询交易日历记录。
+- `get_open_trade_dates(start, end, exchange="SSE")`:查询指定交易所开市日列表。
 
 ## ETL 入口
 
-ETL 使用 `scripts/run_etl.py` 作为轻量入口。当前不做 pipeline 框架和自动调度, 只保留 raw 落盘和 raw 加载两个阶段。
+ETL 使用 `scripts/run_etl.py` 作为轻量入口。不做 pipeline 框架和自动调度,只保留 raw 落盘和 raw 加载两个阶段。
 
-ETL 分为两个阶段：
+ETL 分为两个阶段:
 
 ```text
 外部数据源 -> fetch -> data/raw -> load -> DuckDB 或 processed Parquet
 ```
 
-阶段命令可以独立执行：
+阶段命令可以独立执行:
 
 ```bash
 uv run python scripts/run_etl.py fetch trade-calendar \
@@ -284,80 +275,98 @@ uv run python scripts/run_etl.py load daily-ohlcv \
   --end-date 20240131
 ```
 
-生命周期命令负责编排阶段：
+生命周期命令负责编排阶段:
 
 ```bash
 uv run python scripts/run_etl.py backfill trade-calendar \
   --source tushare \
   --exchange SSE \
-  --start-date 20200101 \
-  --end-date 20260614
+  --start-date 20130101 \
+  --end-date 20260617
 
-uv run python scripts/run_etl.py status trade-calendar \
-  --source tushare
+uv run python scripts/run_etl.py status trade-calendar --source tushare
 
-uv run python scripts/run_etl.py status daily-ohlcv \
-  --source tushare
+uv run python scripts/run_etl.py status daily-ohlcv --source tushare
 
 uv run python scripts/run_etl.py archive daily-ohlcv \
   --source tushare \
-  --year 2025
+  --year 2023
 ```
 
-生命周期约定：
+生命周期约定:
 
-- `fetch`：只连接外部数据源，只写 `data/raw`，不写 DuckDB，不写 processed。
-- `load`：只读取 `data/raw`，清洗转换后写 DuckDB 或 processed。
-- `backfill`：历史回填，必须显式传入日期范围，按 `fetch -> load` 执行。
-- `archive`：将已结束年份的日线行情月文件合并为年文件，并删除对应月文件。
-- `status`：直接从目标表或 processed 数据聚合当前真实状态。
+- `fetch`:只连接外部数据源,只写 `data/raw`,不写 DuckDB,不写 processed。
+- `load`:只读取 `data/raw`,清洗转换后写 DuckDB 或 processed。
+- `backfill`:历史回填,必须显式传入日期范围,按 `fetch -> load` 执行。
+- `archive`:将已结束年份的日线行情月文件合并为年文件,并删除对应月文件。
+- `status`:直接从目标表或 processed 数据实时聚合当前真实状态。
 
-当前已支持：
+### 已支持的数据集
 
-- `trade-calendar + tushare`：拉取 Tushare 交易日历，保存 raw CSV，加载到 DuckDB `dim_trade_calendar`，并通过 `status` 查询目标表真实状态。
-- `daily-ohlcv + tushare`：读取本地交易日历中的开市日，逐日调用 Tushare 日线接口，每个交易日保存一个 raw CSV；load 时标准化字段并写入月度 processed Parquet；已结束年份可归档为年度 Parquet。
+- **trade-calendar + tushare**:拉取 Tushare 交易日历,保存 raw CSV,加载到 DuckDB `dim_trade_calendar`,并通过 `status` 查询目标表真实状态。
+- **daily-ohlcv + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare 日线接口,每个交易日保存一个 raw CSV;load 时标准化字段并用 Pydantic 契约校验,再写入月度 processed Parquet;已结束年份可归档为年度 Parquet。
 
-raw 层约定使用数据源接口返回的 `pandas.DataFrame` 原样保存为 CSV：
+### raw 层约定
+
+raw 层按数据集使用不同布局:
 
 ```text
+# 单文件维表
 data/raw/tushare/trade-calendar/trade-calendar_tushare.csv
+
+# 按交易日分文件(每个交易日一个 raw CSV)
 data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240102.csv
 ```
 
-交易日历这类小维表使用单文件 raw；日线行情这类持续增长的数据集按年月分区, 每个交易日一个 raw CSV。raw 文件是 fetch 阶段的输入缓存，不代表当前完整数据状态；DuckDB 表或 processed Parquet 才是 load 后的事实源。
+raw 文件是 fetch 阶段的输入缓存,不代表当前完整数据状态;DuckDB 表或 processed Parquet 才是 load 后的事实源。
 
-拉取 Tushare 日线行情前，需要先完成交易日历加载。日线接口会按 `dim_trade_calendar` 中的开市日逐日请求，并在请求之间固定等待 0.2 秒，避免超过每分钟 500 次。范围 fetch 会生成多个单日 raw 文件。
+### 日线 fetch 的限速与断点续传
 
-日线行情 processed 层约定：
+拉取 Tushare 日线行情前,需要先完成交易日历加载。日线接口会按 `dim_trade_calendar` 中的开市日逐日请求,并在请求之间固定等待 0.2 秒,避免超过 Tushare 每分钟 500 次的限制。`fetch_daily_ohlcv` 使用生成器逐日产出数据,fetch 主流程每拉一天就立即落盘一个 raw CSV,不会把整个时间跨度的数据全部堆积在内存中。
 
-```text
-data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet
-data/processed/ohlcv/year=2024/ohlcv_2024.parquet
+`fetch` 默认跳过已存在的 raw 文件(断点续传),需要强制覆盖时加 `--force`:
+
+```bash
+uv run python scripts/run_etl.py fetch daily-ohlcv \
+  --source tushare \
+  --start-date 20240102 \
+  --end-date 20240131
+# 中断后重跑,已落盘的 raw CSV 会自动跳过
 ```
 
-`load daily-ohlcv` 永远先写月文件；如果同一月文件已存在，会读取旧文件和新 raw 合并，并按 `(ts_code, trade_date)` 去重，新数据覆盖旧数据。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份，会把该年份月文件合并到年文件，写入成功后删除月文件。不要长期同时保留同一年份的月文件和年文件，否则递归读取时会重复统计。
-
-遇到未实现的数据集时, CLI 会返回中文错误：
+### 日线 processed 层约定
 
 ```text
-暂未实现数据集: dataset=..., source=...
+data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet   # 月文件
+data/processed/ohlcv/year=2024/ohlcv_2024.parquet              # 年文件(归档后)
 ```
 
-暂不维护 ETL 状态表作为判断依据。`etl_manifest` 只做兼容保留，业务状态查询以目标数据实时聚合为准；交易日历从 `dim_trade_calendar` 聚合，日线行情从 `data/processed/ohlcv/**/*.parquet` 聚合。
+`load daily-ohlcv` 永远先写月文件;如果同一月文件已存在,会读取旧文件和新 raw 合并,并按 `(ts_code, trade_date)` 去重,新数据覆盖旧数据。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份,会把该年份月文件合并到年文件,写入成功后删除月文件。不要长期同时保留同一年份的月文件和年文件,否则递归读取时会重复统计。
+
+### 数据状态查询
+
+`status` 直接从目标数据实时聚合,不依赖任何状态表:
+
+- `trade-calendar`:从 `dim_trade_calendar` 表聚合交易所、日期范围、开市天数
+- `daily-ohlcv`:从 `data/processed/ohlcv/**/*.parquet` 聚合日期范围、行情行数、交易日数、证券数
+
+`etl_manifest` 表仅做兼容保留,当前业务流程不写入也不依赖它。后续如需增量同步基准,再决定是否启用。
 
 ## 常用命令
 
 ```bash
 make install      # uv sync --all-extras
-make etl-status   # uv run python scripts/run_etl.py status trade-calendar --source tushare
+make etl-status   # 查看 daily-ohlcv 状态
 make test         # uv run pytest
+make test-fast    # uv run pytest -x --no-cov(失败即停,不跑覆盖率)
 make lint         # uv run ruff check src/ tests/
 make format       # uv run ruff format . && uv run ruff check --fix src/ tests/
 make typecheck    # uv run mypy src/
 make notebook     # uv run jupyter lab --no-browser
+make clean        # 清理缓存目录
 ```
 
-也可以直接运行：
+也可以直接运行:
 
 ```bash
 uv run pytest
@@ -367,26 +376,26 @@ uv run mypy src/
 
 ## 当前状态
 
-已完成：
+已完成:
 
 - 项目目录骨架
-- TOML 多层配置加载
-- 环境变量机密读取
-- Loguru 日志配置
-- A 股日线研究版 DuckDB schema
-- Pydantic 数据模型
-- Repository 查询入口
-- 轻量 ETL 入口
-- Tushare 交易日历 fetch/load/status 最小链路
-- Tushare 日线行情 raw fetch、月度 load、年度 archive、status
-- 基础测试覆盖
+- TOML 多层配置加载 + 环境变量机密读取
+- Loguru 日志配置(通用日志 + ETL 专用日志)
+- A 股日线研究版 DuckDB schema(维表 + Parquet 视图)
+- Pydantic v2 数据契约(10 个数据模型,日线 load 末尾做最终校验)
+- Repository 查询入口(日线、截面、因子、交易日历、开市日)
+- 轻量 ETL 入口(fetch / load / backfill / archive / status)
+- Tushare 交易日历 fetch / load / status 完整链路
+- Tushare 日线行情 raw fetch(生成器边拉边写 + 断点续传)、月度 load、年度 archive、status
+- 基础测试覆盖(87 个测试,覆盖率 94%)
 
-待实现：
+待实现:
 
+- 复权因子、每日指标、指数日线等更多数据集的 Tushare 适配
 - AkShare、MiniQMT 等更多数据源适配
 - 日线行情缺失交易日检查和补数辅助命令
 - 技术指标和因子 pipeline
 - 策略基类和信号生成
-- A 股回测撮合、组合、绩效指标
+- A 股回测撮合(T+1、涨跌停、停牌)、组合、绩效指标
 
 更完整的模块设计见 [lofty-quant-design.md](lofty-quant-design.md)。
