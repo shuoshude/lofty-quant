@@ -84,15 +84,6 @@ class BacktestConfig(BaseModel):
     benchmark: str = "000300.SH"
 
 
-class SecretsConfig(BaseModel):
-    """从环境变量读取的机密配置。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    tushare_token: str | None = None
-    akshare_token: str | None = None
-
-
 class SecretsSettings(BaseSettings):
     """从环境变量读取 secrets 的 settings 模型。"""
 
@@ -118,7 +109,7 @@ class QuantConfig(BaseModel):
     market: MarketConfig = Field(default_factory=MarketConfig)
     trading: TradingConfig = Field(default_factory=TradingConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
-    secrets: SecretsConfig = Field(default_factory=SecretsConfig)
+    secrets: SecretsSettings = Field(default_factory=SecretsSettings)
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any], base_dir: Path) -> Self:

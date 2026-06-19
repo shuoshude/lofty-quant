@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from quant.config import PathsConfig, ProjectConfig, QuantConfig, SecretsConfig
+from quant.config import PathsConfig, ProjectConfig, QuantConfig, SecretsSettings
 from quant.data.db import DuckDBManager
 from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
@@ -347,7 +347,7 @@ def make_config(tmp_path: Path, *, token: str | None) -> QuantConfig:
             notebooks_dir=tmp_path / "notebooks",
             log_dir=tmp_path / "log",
         ),
-        secrets=SecretsConfig(tushare_token=token),
+        secrets=SecretsSettings(tushare_token=token),
     )
 
 
