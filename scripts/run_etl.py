@@ -18,7 +18,10 @@ from quant.logger import setup_logger
 
 app = typer.Typer(help="lofty-quant ETL 轻量入口")
 
-DatasetArg = Annotated[str, typer.Argument(help="数据集名称, 例如 daily-ohlcv 或 trade-calendar")]
+DatasetArg = Annotated[
+    str,
+    typer.Argument(help="数据集名称, 例如 daily-ohlcv、adj-factor 或 trade-calendar"),
+]
 SourceOption = Annotated[str, typer.Option("--source", "-s", help="数据源名称")]
 ConfigDirOption = Annotated[str | None, typer.Option("--config-dir", help="配置目录")]
 EnvironmentOption = Annotated[str | None, typer.Option("--environment", "-e", help="配置环境")]
@@ -175,6 +178,23 @@ def status(
         typer.echo(f"证券数: {state['security_count']}")
         return
 
+    if dataset == "adj-factor":
+        state = _get_adj_factor_status(config)
+        logger.bind(module="etl").info(
+            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
+            dataset,
+            source or "*",
+            state["row_count"],
+        )
+        typer.echo(f"数据集: {dataset}")
+        typer.echo(f"数据源: {source or '*'}")
+        typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
+        typer.echo(f"结束日期: {_format_optional_value(state['end_date'])}")
+        typer.echo(f"因子行数: {state['row_count']}")
+        typer.echo(f"交易日数: {state['trade_date_count']}")
+        typer.echo(f"证券数: {state['security_count']}")
+        return
+
     raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
 
 
@@ -224,7 +244,30 @@ def _get_trade_calendar_status(conn: DuckDBPyConnection) -> dict[str, object]:
 
 def _get_daily_ohlcv_status(config: QuantConfig) -> dict[str, object]:
     """从日线行情 processed Parquet 聚合真实状态。"""
-    dataset_dir = config.paths.processed_dir / "ohlcv"
+    return _get_daily_processed_status(
+        config,
+        dataset_dir_name="ohlcv",
+        view_name="v_daily_ohlcv",
+    )
+
+
+def _get_adj_factor_status(config: QuantConfig) -> dict[str, object]:
+    """从复权因子 processed Parquet 聚合真实状态。"""
+    return _get_daily_processed_status(
+        config,
+        dataset_dir_name="adj_factor",
+        view_name="v_adj_factor",
+    )
+
+
+def _get_daily_processed_status(
+    config: QuantConfig,
+    *,
+    dataset_dir_name: str,
+    view_name: str,
+) -> dict[str, object]:
+    """从日频 processed Parquet 聚合真实状态。"""
+    dataset_dir = config.paths.processed_dir / dataset_dir_name
     if not list(dataset_dir.glob("**/*.parquet")):
         return {
             "start_date": None,
@@ -236,14 +279,14 @@ def _get_daily_ohlcv_status(config: QuantConfig) -> dict[str, object]:
 
     with _status_session(config) as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT
                 MIN(trade_date) AS start_date,
                 MAX(trade_date) AS end_date,
                 COUNT(*) AS row_count,
                 COUNT(DISTINCT trade_date) AS trade_date_count,
                 COUNT(DISTINCT ts_code) AS security_count
-            FROM v_daily_ohlcv
+            FROM {view_name}
             """
         ).fetchone()
 

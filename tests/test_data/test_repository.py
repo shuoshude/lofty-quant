@@ -2,6 +2,7 @@ from datetime import date
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from quant.data.db import DuckDBManager
 from quant.data.repository import QuantRepository
@@ -16,11 +17,44 @@ def test_repository_returns_daily_bars_ordered_by_date(tmp_path: Path) -> None:
             "000001.SZ",
             date(2024, 1, 1),
             date(2024, 1, 3),
-            adjusted=True,
+            adjustment="qfq",
+            as_of_date=date(2024, 1, 3),
         )
 
     assert [row["trade_date"] for row in rows] == [date(2024, 1, 2), date(2024, 1, 3)]
-    assert [row["adj_close"] for row in rows] == [21.0, 24.0]
+    assert [row["qfq_close"] for row in rows] == pytest.approx([7.875, 12.0])
+
+
+def test_repository_returns_hfq_daily_bars(tmp_path: Path) -> None:
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        repository = QuantRepository(conn)
+        rows = repository.get_daily_bars(
+            "000001.SZ",
+            date(2024, 1, 1),
+            date(2024, 1, 3),
+            adjustment="hfq",
+        )
+
+    assert [row["hfq_close"] for row in rows] == pytest.approx([15.75, 24.0])
+
+
+def test_repository_qfq_as_of_date_does_not_use_future_factor(tmp_path: Path) -> None:
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        repository = QuantRepository(conn)
+        rows = repository.get_daily_bars(
+            "000001.SZ",
+            date(2024, 1, 1),
+            date(2024, 1, 3),
+            adjustment="qfq",
+            as_of_date=date(2024, 1, 2),
+        )
+
+    assert [row["trade_date"] for row in rows] == [date(2024, 1, 2)]
+    assert [row["qfq_close"] for row in rows] == pytest.approx([10.5])
 
 
 def test_repository_cross_section_can_exclude_suspended_rows(tmp_path: Path) -> None:
@@ -128,7 +162,7 @@ def initialized_manager(tmp_path: Path) -> DuckDBManager:
         {
             "ts_code": ["000001.SZ", "000001.SZ", "000002.SZ"],
             "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 2)],
-            "adj_factor": [2.0, 2.0, 1.0],
+            "cumulative_factor": [1.5, 2.0, 1.0],
         },
     )
     write_parquet(

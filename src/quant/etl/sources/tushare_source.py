@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from quant.config import QuantConfig
 from quant.data.db import DuckDBManager
 from quant.data.repository import QuantRepository
-from quant.data.schemas import DailyOHLCVRecord
+from quant.data.schemas import AdjFactorRecord, DailyOHLCVRecord
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import find_raw_files, read_raw_csv
 from quant.etl.processed import archive_daily_year, load_daily_raw_csv_to_monthly_parquet
@@ -65,6 +65,9 @@ DAILY_OHLCV_PROCESSED_COLUMNS = (
     "is_st",
     "limit_status",
 )
+ADJ_FACTOR_RAW_COLUMNS = ("ts_code", "trade_date", "adj_factor")
+ADJ_FACTOR_REQUIRED_RAW_COLUMNS = ("ts_code", "trade_date", "adj_factor")
+ADJ_FACTOR_PROCESSED_COLUMNS = ("ts_code", "trade_date", "cumulative_factor")
 MISSING_TRADE_CALENDAR_MESSAGE = "请先加载交易日历后再拉取日线行情"
 
 
@@ -85,6 +88,8 @@ class TushareClient:
             return self.fetch_trade_calendar(task)
         if task.dataset == "daily-ohlcv":
             return self.fetch_daily_ohlcv(task)
+        if task.dataset == "adj-factor":
+            return self.fetch_adj_factor(task)
         raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
     def fetch_trade_calendar(self, task: ETLTask) -> DataFrame:
@@ -117,6 +122,10 @@ class TushareClient:
 
         for trade_date in trade_dates:
             trade_date_text = trade_date.strftime("%Y%m%d")
+            if _should_skip_existing_daily_raw(self._config, task, trade_date):
+                yield trade_date, pd.DataFrame(columns=DAILY_OHLCV_RAW_COLUMNS)
+                continue
+
             _sleep_before_request()
             logger.bind(module="etl").info(
                 "开始调用 Tushare 日线行情接口: trade_date={}",
@@ -152,6 +161,56 @@ class TushareClient:
             len(trade_dates),
         )
 
+    def fetch_adj_factor(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
+        """按本地交易日历逐日拉取 Tushare 复权因子原始数据。"""
+        trade_dates = _load_open_trade_dates(self._config, task)
+        logger.bind(module="etl").info(
+            "开始拉取 Tushare 复权因子: exchange={}, 开市日数量={}",
+            task.exchange or "SSE",
+            len(trade_dates),
+        )
+
+        for trade_date in trade_dates:
+            trade_date_text = trade_date.strftime("%Y%m%d")
+            if _should_skip_existing_daily_raw(self._config, task, trade_date):
+                yield trade_date, pd.DataFrame(columns=ADJ_FACTOR_RAW_COLUMNS)
+                continue
+
+            _sleep_before_request()
+            logger.bind(module="etl").info(
+                "开始调用 Tushare 复权因子接口: trade_date={}",
+                trade_date_text,
+            )
+            try:
+                result = self._pro_api.adj_factor(trade_date=trade_date_text)
+            except Exception:
+                logger.bind(module="etl").exception(
+                    "Tushare 复权因子接口调用失败: trade_date={}",
+                    trade_date_text,
+                )
+                raise
+
+            df = cast(DataFrame, result)
+            logger.bind(module="etl").info(
+                "Tushare 复权因子接口返回完成: trade_date={}, 行数={}",
+                trade_date_text,
+                len(df.index),
+            )
+            if df.empty:
+                logger.bind(module="etl").info(
+                    "Tushare 复权因子返回为空, 写出空 raw CSV 表头: trade_date={}",
+                    trade_date_text,
+                )
+                yield trade_date, pd.DataFrame(columns=ADJ_FACTOR_RAW_COLUMNS)
+                continue
+
+            yield trade_date, df
+
+        logger.bind(module="etl").info(
+            "Tushare 复权因子按日拉取完成: 交易日数量={}",
+            len(trade_dates),
+        )
+
 
 def load_tushare_data(config: QuantConfig, task: ETLTask) -> int:
     """按数据集加载 Tushare raw CSV。"""
@@ -159,6 +218,8 @@ def load_tushare_data(config: QuantConfig, task: ETLTask) -> int:
         return load_trade_calendar(config, task)
     if task.dataset == "daily-ohlcv":
         return load_daily_ohlcv(config, task)
+    if task.dataset == "adj-factor":
+        return load_adj_factor(config, task)
     raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
 
@@ -222,6 +283,33 @@ def load_daily_ohlcv(config: QuantConfig, task: ETLTask) -> int:
     for output_path, written_count in sorted(result.written_paths.items()):
         logger.bind(module="etl").info(
             "日线行情 processed 月文件写入完成: 路径={}, 新增行数={}",
+            output_path,
+            written_count,
+        )
+
+    return result.row_count
+
+
+def load_adj_factor(config: QuantConfig, task: ETLTask) -> int:
+    """读取 Tushare 复权因子 raw CSV, 标准化后写入月度 processed Parquet。"""
+    raw_files = find_raw_files(config.paths.raw_dir, task)
+    if not raw_files:
+        raise FileNotFoundError("未找到复权因子 raw CSV 文件")
+
+    result = load_daily_raw_csv_to_monthly_parquet(
+        raw_files,
+        config.paths.processed_dir,
+        "adj_factor",
+        read_frame=read_raw_csv,
+        normalize_frame=lambda raw_df: normalize_adj_factor_df(raw_df, task),
+        date_column="trade_date",
+        key_columns=["ts_code", "trade_date"],
+        columns=ADJ_FACTOR_PROCESSED_COLUMNS,
+        dry_run=task.dry_run,
+    )
+    for output_path, written_count in sorted(result.written_paths.items()):
+        logger.bind(module="etl").info(
+            "复权因子 processed 月文件写入完成: 路径={}, 新增行数={}",
             output_path,
             written_count,
         )
@@ -299,6 +387,24 @@ def normalize_daily_ohlcv_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_PROCESSED_COLUMNS)])
 
 
+def normalize_adj_factor_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
+    """将 Tushare 复权因子 raw DataFrame 转换为项目标准表结构。"""
+    _require_adj_factor_columns(raw_df)
+    if raw_df.empty:
+        return pd.DataFrame(columns=ADJ_FACTOR_PROCESSED_COLUMNS)
+
+    output = pd.DataFrame(index=raw_df.index)
+    output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
+    output["trade_date"] = _parse_date_series(raw_df["trade_date"], field_name="trade_date")
+    _validate_adj_factor_date_range(output["trade_date"], task)
+    output["cumulative_factor"] = _parse_numeric_series(
+        raw_df["adj_factor"],
+        field_name="adj_factor",
+    )
+
+    return _validate_adj_factor_contract(output.loc[:, list(ADJ_FACTOR_PROCESSED_COLUMNS)])
+
+
 def _validate_daily_ohlcv_contract(df: DataFrame) -> DataFrame:
     """使用项目日线数据契约进行最终校验。"""
     errors: list[str] = []
@@ -330,6 +436,37 @@ def _format_daily_ohlcv_validation_error(row: dict[str, Any], exc: ValidationErr
     )
 
 
+def _validate_adj_factor_contract(df: DataFrame) -> DataFrame:
+    """使用项目复权因子契约进行最终校验。"""
+    errors: list[str] = []
+    for row in df.to_dict(orient="records"):
+        row_data = {str(key): value for key, value in row.items()}
+        try:
+            AdjFactorRecord(**row_data)
+        except ValidationError as exc:
+            errors.append(_format_adj_factor_validation_error(row_data, exc))
+            if len(errors) >= 3:
+                break
+
+    if errors:
+        raise ValueError(f"复权因子数据契约校验失败: {'; '.join(errors)}")
+    return df
+
+
+def _format_adj_factor_validation_error(row: dict[str, Any], exc: ValidationError) -> str:
+    """格式化复权因子校验错误, 便于定位异常行。"""
+    error_messages = []
+    for error in exc.errors()[:3]:
+        location = ".".join(str(part) for part in error.get("loc", ())) or "-"
+        error_messages.append(f"{location}: {error.get('msg', '-')}")
+
+    return (
+        f"ts_code={row.get('ts_code', '-')}, "
+        f"trade_date={row.get('trade_date', '-')}, "
+        f"错误={', '.join(error_messages)}"
+    )
+
+
 def _require_columns(df: DataFrame, columns: Sequence[str]) -> None:
     """校验 raw DataFrame 必须包含指定字段。"""
     missing_columns = [column for column in columns if column not in df.columns]
@@ -346,12 +483,29 @@ def _require_daily_ohlcv_columns(df: DataFrame) -> None:
         raise ValueError(f"日线行情 raw 缺少字段: {missing_columns}")
 
 
+def _require_adj_factor_columns(df: DataFrame) -> None:
+    """校验复权因子 raw DataFrame 必须包含核心字段。"""
+    missing_columns = [
+        column for column in ADJ_FACTOR_REQUIRED_RAW_COLUMNS if column not in df.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"复权因子 raw 缺少字段: {missing_columns}")
+
+
 def _validate_daily_ohlcv_date_range(series: pd.Series, task: ETLTask) -> None:
     """校验 raw 中的交易日是否落在任务范围内。"""
     invalid_mask = (series < task.start_date) | (series > task.end_date)
     if invalid_mask.any():
         invalid_values = series[invalid_mask].head(3).tolist()
         raise ValueError(f"日线行情 raw 日期超出任务范围: {invalid_values}")
+
+
+def _validate_adj_factor_date_range(series: pd.Series, task: ETLTask) -> None:
+    """校验复权因子 raw 中的交易日是否落在任务范围内。"""
+    invalid_mask = (series < task.start_date) | (series > task.end_date)
+    if invalid_mask.any():
+        invalid_values = series[invalid_mask].head(3).tolist()
+        raise ValueError(f"复权因子 raw 日期超出任务范围: {invalid_values}")
 
 
 def _normalize_exchange_series(raw_df: DataFrame, default_exchange: str) -> pd.Series:
@@ -445,6 +599,24 @@ def _load_open_trade_dates(config: QuantConfig, task: ETLTask) -> list[date]:
     if not trade_dates:
         raise ValueError(MISSING_TRADE_CALENDAR_MESSAGE)
     return trade_dates
+
+
+def _should_skip_existing_daily_raw(config: QuantConfig, task: ETLTask, trade_date: date) -> bool:
+    """存在日频 raw 且未强制覆盖时,跳过外部接口请求。"""
+    if task.force or task.dry_run:
+        return False
+
+    daily_task = task.model_copy(update={"start_date": trade_date, "end_date": trade_date})
+    raw_path = build_raw_path(config.paths.raw_dir, daily_task)
+    if not raw_path.is_file():
+        return False
+
+    logger.bind(module="etl").info(
+        "日频 raw CSV 已存在, 跳过外部接口请求: dataset={}, 路径={}",
+        task.dataset,
+        raw_path,
+    )
+    return True
 
 
 def _sleep_before_request() -> None:

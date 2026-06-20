@@ -72,7 +72,7 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
         {
             "ts_code": ["000001.SZ"],
             "trade_date": [date(2024, 1, 2)],
-            "adj_factor": [2.0],
+            "cumulative_factor": [2.0],
         },
     )
     write_parquet(
@@ -100,14 +100,26 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
                 """
             ).fetchall()
         }
-        adj_close = conn.execute(
-            "SELECT adj_close FROM v_daily_adj WHERE ts_code = ?",
+        hfq_close = conn.execute(
+            "SELECT hfq_close FROM v_daily_hfq WHERE ts_code = ?",
+            ["000001.SZ"],
+        ).fetchone()[0]
+        qfq_close = conn.execute(
+            "SELECT qfq_close FROM v_daily_qfq_latest WHERE ts_code = ?",
             ["000001.SZ"],
         ).fetchone()[0]
         daily_count = conn.execute("SELECT COUNT(*) FROM v_daily_ohlcv").fetchone()[0]
 
-    assert {"v_daily_ohlcv", "v_adj_factor", "v_factors", "v_daily_adj"}.issubset(view_names)
-    assert adj_close == 21.0
+    assert {
+        "v_daily_ohlcv",
+        "v_adj_factor",
+        "v_factors",
+        "v_daily_hfq",
+        "v_daily_qfq_latest",
+        "v_daily_adj",
+    }.issubset(view_names)
+    assert hfq_close == 21.0
+    assert qfq_close == 10.5
     assert daily_count == 2
 
 

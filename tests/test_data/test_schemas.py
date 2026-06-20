@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from quant.data.schemas import DailyOHLCVRecord, FactorRecord, FundamentalRecord
+from quant.data.schemas import AdjFactorRecord, DailyOHLCVRecord, FactorRecord, FundamentalRecord
 
 
 def test_daily_ohlcv_rejects_invalid_ts_code() -> None:
@@ -58,6 +58,23 @@ def test_daily_ohlcv_rejects_negative_volume() -> None:
             close=10.5,
             volume=-1.0,
             amount=10500.0,
+        )
+
+
+def test_adj_factor_record_uses_standard_cumulative_factor() -> None:
+    record = AdjFactorRecord(
+        ts_code="000001.SZ",
+        trade_date=date(2024, 1, 2),
+        cumulative_factor=2.0,
+    )
+
+    assert record.cumulative_factor == 2.0
+
+    with pytest.raises(ValidationError, match="greater than 0"):
+        AdjFactorRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            cumulative_factor=0.0,
         )
 
 

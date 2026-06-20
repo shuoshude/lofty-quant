@@ -94,6 +94,24 @@ def test_build_raw_path_uses_month_partition_for_large_dataset(tmp_path: Path) -
     )
 
 
+def test_build_raw_path_uses_daily_file_layout_for_adj_factor(tmp_path: Path) -> None:
+    task = ETLTask(
+        dataset="adj-factor",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+    )
+
+    assert build_raw_path(tmp_path, task) == (
+        tmp_path
+        / "tushare"
+        / "adj-factor"
+        / "year=2024"
+        / "month=01"
+        / "adj-factor_tushare_20240102.csv"
+    )
+
+
 def test_iter_raw_partition_dirs_spans_month_range(tmp_path: Path) -> None:
     task = ETLTask(
         dataset="daily-ohlcv",

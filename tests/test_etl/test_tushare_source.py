@@ -12,6 +12,7 @@ from quant.etl.sources import tushare_source
 from quant.etl.sources.tushare_source import (
     TushareClient,
     load_trade_calendar,
+    normalize_adj_factor_df,
     normalize_daily_ohlcv_df,
     normalize_trade_calendar_df,
 )
@@ -146,6 +147,121 @@ def test_tushare_source_daily_ohlcv_returns_empty_columns(
     assert list(df.columns) == list(tushare_source.DAILY_OHLCV_RAW_COLUMNS)
 
 
+def test_tushare_source_fetches_adj_factor_from_open_trade_dates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(
+        config,
+        [
+            ("SSE", date(2024, 1, 2), True, date(2023, 12, 29)),
+            ("SSE", date(2024, 1, 3), False, date(2024, 1, 2)),
+            ("SSE", date(2024, 1, 4), True, date(2024, 1, 2)),
+        ],
+    )
+    adj_factor_calls: list[str] = []
+    sleep_calls: list[str] = []
+
+    class FakeApi:
+        def adj_factor(self, *, trade_date):
+            adj_factor_calls.append(trade_date)
+            return pd.DataFrame(
+                [{"ts_code": "000001.SZ", "trade_date": trade_date, "adj_factor": 2.0}]
+            )
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
+
+    task = ETLTask(
+        dataset="adj-factor",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 4),
+        exchange="SSE",
+    )
+
+    frames_by_date = dict(TushareClient(config).fetch_adj_factor(task))
+
+    assert adj_factor_calls == ["20240102", "20240104"]
+    assert sleep_calls == ["sleep", "sleep"]
+    assert list(frames_by_date) == [date(2024, 1, 2), date(2024, 1, 4)]
+    assert frames_by_date[date(2024, 1, 2)]["adj_factor"].tolist() == [2.0]
+
+
+def test_tushare_source_skips_existing_adj_factor_raw_before_request(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+    task = ETLTask(
+        dataset="adj-factor",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240102", "adj_factor": "2.0"}]),
+    )
+    sleep_calls: list[str] = []
+
+    class FakeApi:
+        def adj_factor(self, *, trade_date):
+            raise AssertionError("已有 raw 时不应调用 Tushare adj_factor 接口")
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
+
+    frames_by_date = dict(TushareClient(config).fetch_adj_factor(task))
+
+    assert sleep_calls == []
+    assert list(frames_by_date) == [date(2024, 1, 2)]
+    assert frames_by_date[date(2024, 1, 2)].empty
+
+
+def test_tushare_source_adj_factor_returns_empty_columns(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+
+    class FakeApi:
+        def adj_factor(self, *, trade_date):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    task = ETLTask(
+        dataset="adj-factor",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+
+    frames_by_date = dict(TushareClient(config).fetch_adj_factor(task))
+
+    df = frames_by_date[date(2024, 1, 2)]
+    assert df.empty
+    assert list(df.columns) == list(tushare_source.ADJ_FACTOR_RAW_COLUMNS)
+
+
 def test_tushare_source_daily_ohlcv_requires_trade_calendar(
     monkeypatch,
     tmp_path: Path,
@@ -257,6 +373,39 @@ def test_normalize_daily_ohlcv_df_rejects_negative_volume_and_amount() -> None:
         normalize_daily_ohlcv_df(negative_amount_df, make_daily_task())
 
 
+def test_normalize_adj_factor_df_maps_to_cumulative_factor() -> None:
+    normalized = normalize_adj_factor_df(make_adj_factor_raw_df(), make_adj_factor_task())
+
+    assert list(normalized.columns) == ["ts_code", "trade_date", "cumulative_factor"]
+    assert normalized.to_dict(orient="records") == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": date(2024, 1, 2),
+            "cumulative_factor": 2.0,
+        }
+    ]
+
+
+def test_normalize_adj_factor_df_rejects_invalid_rows() -> None:
+    with pytest.raises(ValueError, match="复权因子 raw 缺少字段"):
+        normalize_adj_factor_df(pd.DataFrame([{"ts_code": "000001.SZ"}]), make_adj_factor_task())
+
+    with pytest.raises(ValueError, match="日期字段 trade_date 格式无效"):
+        normalize_adj_factor_df(
+            make_adj_factor_raw_df(trade_date="invalid"),
+            make_adj_factor_task(),
+        )
+
+    with pytest.raises(ValueError, match="复权因子 raw 日期超出任务范围"):
+        normalize_adj_factor_df(
+            make_adj_factor_raw_df(trade_date="20240103"),
+            make_adj_factor_task(),
+        )
+
+    with pytest.raises(ValueError, match=r"复权因子数据契约校验失败.*cumulative_factor"):
+        normalize_adj_factor_df(make_adj_factor_raw_df(adj_factor="0"), make_adj_factor_task())
+
+
 def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Path) -> None:
     config = make_config(tmp_path, token=None)
     task = ETLTask(
@@ -307,6 +456,15 @@ def make_daily_task() -> ETLTask:
     )
 
 
+def make_adj_factor_task() -> ETLTask:
+    return ETLTask(
+        dataset="adj-factor",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+    )
+
+
 def make_daily_raw_df(
     *,
     ts_code: str = "000001.SZ",
@@ -334,6 +492,17 @@ def make_daily_raw_df(
                 "amount": amount,
             }
         ]
+    )
+
+
+def make_adj_factor_raw_df(
+    *,
+    ts_code: str = "000001.SZ",
+    trade_date: str = "20240102",
+    adj_factor: str = "2.0",
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [{"ts_code": ts_code, "trade_date": trade_date, "adj_factor": adj_factor}]
     )
 
 

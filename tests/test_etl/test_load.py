@@ -272,6 +272,57 @@ def test_load_daily_ohlcv_skips_empty_raw(tmp_path: Path) -> None:
     assert not output_path.exists()
 
 
+def test_load_adj_factor_writes_monthly_processed_parquet(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = adj_factor_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_adj_factor_raw(config, date(2024, 1, 2), adj_factor="2.0")
+
+    row_count = load_raw_data(config, task)
+
+    output_path = adj_factor_month_path(config, 2024, 1)
+    df = pd.read_parquet(output_path)
+
+    assert row_count == 1
+    assert output_path.exists()
+    assert df["ts_code"].tolist() == ["000001.SZ"]
+    assert pd.to_datetime(df["trade_date"]).dt.date.tolist() == [date(2024, 1, 2)]
+    assert df["cumulative_factor"].tolist() == [2.0]
+
+
+def test_load_adj_factor_overwrites_existing_key(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = adj_factor_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_adj_factor_raw(config, date(2024, 1, 2), adj_factor="2.0")
+    load_raw_data(config, task)
+
+    write_adj_factor_raw(config, date(2024, 1, 2), adj_factor="2.5")
+    load_raw_data(config, task)
+
+    df = pd.read_parquet(adj_factor_month_path(config, 2024, 1))
+
+    assert len(df.index) == 1
+    assert df["cumulative_factor"].tolist() == [2.5]
+
+
+def test_load_adj_factor_rejects_missing_raw_and_invalid_rows(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = adj_factor_task(date(2024, 1, 2), date(2024, 1, 2))
+
+    with pytest.raises(FileNotFoundError, match="未找到复权因子 raw CSV 文件"):
+        load_raw_data(config, task)
+
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240102"}]),
+    )
+    with pytest.raises(ValueError, match="复权因子 raw 缺少字段"):
+        load_raw_data(config, task)
+
+    write_adj_factor_raw(config, date(2024, 1, 2), adj_factor="0")
+    with pytest.raises(ValueError, match=r"复权因子数据契约校验失败.*cumulative_factor"):
+        load_raw_data(config, task)
+
+
 def test_archive_daily_ohlcv_year_merges_month_files_and_removes_them(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     archive_year = date.today().year - 1
@@ -338,6 +389,15 @@ def daily_task(start_date: date, end_date: date) -> ETLTask:
     )
 
 
+def adj_factor_task(start_date: date, end_date: date) -> ETLTask:
+    return ETLTask(
+        dataset="adj-factor",
+        source="tushare",
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
 def write_daily_raw(
     config: QuantConfig,
     raw_date: date,
@@ -371,6 +431,30 @@ def write_daily_raw(
     )
 
 
+def write_adj_factor_raw(
+    config: QuantConfig,
+    raw_date: date,
+    *,
+    ts_code: str = "000001.SZ",
+    trade_date: str | None = None,
+    adj_factor: str = "2.0",
+) -> None:
+    task = adj_factor_task(raw_date, raw_date)
+    raw_path = build_raw_path(config.paths.raw_dir, task)
+    write_raw_csv(
+        raw_path,
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": ts_code,
+                    "trade_date": trade_date or raw_date.strftime("%Y%m%d"),
+                    "adj_factor": adj_factor,
+                }
+            ]
+        ),
+    )
+
+
 def processed_month_path(config: QuantConfig, year: int, month: int) -> Path:
     return (
         config.paths.processed_dir
@@ -378,6 +462,16 @@ def processed_month_path(config: QuantConfig, year: int, month: int) -> Path:
         / f"year={year}"
         / f"month={month:02d}"
         / f"ohlcv_{year}{month:02d}.parquet"
+    )
+
+
+def adj_factor_month_path(config: QuantConfig, year: int, month: int) -> Path:
+    return (
+        config.paths.processed_dir
+        / "adj_factor"
+        / f"year={year}"
+        / f"month={month:02d}"
+        / f"adj_factor_{year}{month:02d}.parquet"
     )
 
 

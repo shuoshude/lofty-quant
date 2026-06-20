@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import date
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from duckdb import DuckDBPyConnection
 
@@ -20,6 +20,7 @@ DEFAULT_CROSS_SECTION_FIELDS = (
     "is_st",
     "limit_status",
 )
+AdjustmentMode = Literal["none", "hfq", "qfq"]
 
 
 class QuantRepository:
@@ -34,10 +35,18 @@ class QuantRepository:
         start: date,
         end: date,
         *,
-        adjusted: bool = True,
+        adjustment: AdjustmentMode = "none",
+        as_of_date: date | None = None,
+        adjusted: bool | None = None,
     ) -> list[dict[str, Any]]:
         """按证券和交易日排序返回日线行情。"""
-        source = "v_daily_adj" if adjusted else "v_daily_ohlcv"
+        if adjusted is not None:
+            adjustment = "qfq" if adjusted else "none"
+
+        if adjustment == "qfq":
+            return self._get_qfq_daily_bars(ts_code, start, end, as_of_date=as_of_date)
+
+        source = _daily_bar_source(adjustment)
         return self._fetch_dicts(
             f"""
             SELECT *
@@ -47,6 +56,65 @@ class QuantRepository:
             ORDER BY ts_code, trade_date
             """,
             [ts_code, start, end],
+        )
+
+    def _get_qfq_daily_bars(
+        self,
+        ts_code: str,
+        start: date,
+        end: date,
+        *,
+        as_of_date: date | None,
+    ) -> list[dict[str, Any]]:
+        """按 as-of 因子计算前复权日线, 避免使用未来因子。"""
+        effective_as_of = as_of_date or end
+        effective_end = min(end, effective_as_of)
+        if effective_end < start:
+            return []
+
+        return self._fetch_dicts(
+            """
+            WITH base AS (
+                SELECT *
+                FROM v_daily_ohlcv
+                WHERE ts_code = ?
+                  AND trade_date BETWEEN ? AND ?
+            ),
+            asof_factor AS (
+                SELECT cumulative_factor AS asof_cumulative_factor
+                FROM v_adj_factor
+                WHERE ts_code = ?
+                  AND trade_date <= ?
+                ORDER BY trade_date DESC
+                LIMIT 1
+            )
+            SELECT
+                b.ts_code,
+                b.trade_date,
+                b.open,
+                b.high,
+                b.low,
+                b.close,
+                f.cumulative_factor,
+                af.asof_cumulative_factor,
+                b.open * f.cumulative_factor / af.asof_cumulative_factor AS qfq_open,
+                b.high * f.cumulative_factor / af.asof_cumulative_factor AS qfq_high,
+                b.low * f.cumulative_factor / af.asof_cumulative_factor AS qfq_low,
+                b.close * f.cumulative_factor / af.asof_cumulative_factor AS qfq_close,
+                b.volume,
+                b.amount,
+                b.is_suspended,
+                b.is_st,
+                b.limit_status
+            FROM base b
+            LEFT JOIN v_adj_factor f
+              ON b.ts_code = f.ts_code
+             AND b.trade_date = f.trade_date
+            LEFT JOIN asof_factor af
+              ON TRUE
+            ORDER BY b.ts_code, b.trade_date
+            """,
+            [ts_code, start, effective_end, ts_code, effective_as_of],
         )
 
     def get_cross_section(
@@ -156,3 +224,14 @@ def _validate_fields(fields: Sequence[str]) -> list[str]:
     if invalid:
         raise ValueError(f"无效的字段名: {invalid}")
     return list(fields)
+
+
+def _daily_bar_source(adjustment: AdjustmentMode) -> str:
+    """返回复权模式对应的 DuckDB 视图。"""
+    if adjustment == "none":
+        return "v_daily_ohlcv"
+    if adjustment == "hfq":
+        return "v_daily_hfq"
+    if adjustment == "qfq":
+        return "v_daily_qfq_latest"
+    raise ValueError(f"不支持的复权模式: {adjustment}")

@@ -147,7 +147,7 @@ class DuckDBManager:
 
         conn.execute(
             """
-            CREATE OR REPLACE VIEW v_daily_adj AS
+            CREATE OR REPLACE VIEW v_daily_hfq AS
             SELECT
                 o.ts_code,
                 o.trade_date,
@@ -155,11 +155,11 @@ class DuckDBManager:
                 o.high,
                 o.low,
                 o.close,
-                a.adj_factor,
-                o.open * a.adj_factor AS adj_open,
-                o.high * a.adj_factor AS adj_high,
-                o.low * a.adj_factor AS adj_low,
-                o.close * a.adj_factor AS adj_close,
+                a.cumulative_factor,
+                o.open * a.cumulative_factor AS hfq_open,
+                o.high * a.cumulative_factor AS hfq_high,
+                o.low * a.cumulative_factor AS hfq_low,
+                o.close * a.cumulative_factor AS hfq_close,
                 o.volume,
                 o.amount,
                 o.is_suspended,
@@ -171,9 +171,79 @@ class DuckDBManager:
              AND o.trade_date = a.trade_date
             """
         )
-        logger.info("已注册 DuckDB 视图 v_daily_adj")
+        logger.info("已注册 DuckDB 视图 v_daily_hfq")
 
-        # ------------------------------------------------------------------
+        conn.execute(
+            """
+            CREATE OR REPLACE VIEW v_daily_qfq_latest AS
+            WITH latest_factor AS (
+                SELECT ts_code, cumulative_factor AS latest_cumulative_factor
+                FROM (
+                    SELECT
+                        ts_code,
+                        cumulative_factor,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ts_code
+                            ORDER BY trade_date DESC
+                        ) AS row_number
+                    FROM v_adj_factor
+                )
+                WHERE row_number = 1
+            )
+            SELECT
+                o.ts_code,
+                o.trade_date,
+                o.open,
+                o.high,
+                o.low,
+                o.close,
+                a.cumulative_factor,
+                lf.latest_cumulative_factor,
+                o.open * a.cumulative_factor / lf.latest_cumulative_factor AS qfq_open,
+                o.high * a.cumulative_factor / lf.latest_cumulative_factor AS qfq_high,
+                o.low * a.cumulative_factor / lf.latest_cumulative_factor AS qfq_low,
+                o.close * a.cumulative_factor / lf.latest_cumulative_factor AS qfq_close,
+                o.volume,
+                o.amount,
+                o.is_suspended,
+                o.is_st,
+                o.limit_status
+            FROM v_daily_ohlcv o
+            LEFT JOIN v_adj_factor a
+              ON o.ts_code = a.ts_code
+             AND o.trade_date = a.trade_date
+            LEFT JOIN latest_factor lf
+              ON o.ts_code = lf.ts_code
+            """
+        )
+        logger.info("已注册 DuckDB 视图 v_daily_qfq_latest")
+
+        conn.execute(
+            """
+            CREATE OR REPLACE VIEW v_daily_adj AS
+            SELECT
+                ts_code,
+                trade_date,
+                open,
+                high,
+                low,
+                close,
+                cumulative_factor,
+                qfq_open AS adj_open,
+                qfq_high AS adj_high,
+                qfq_low AS adj_low,
+                qfq_close AS adj_close,
+                volume,
+                amount,
+                is_suspended,
+                is_st,
+                limit_status
+            FROM v_daily_qfq_latest
+            """
+        )
+        logger.info("已注册 DuckDB 兼容视图 v_daily_adj")
+
+    # ------------------------------------------------------------------
     # 视图刷新: 供 ETL 写入新 Parquet 后调用
     # ------------------------------------------------------------------
     def refresh_views(self) -> None:

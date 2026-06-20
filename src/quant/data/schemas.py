@@ -92,7 +92,7 @@ class AdjFactorRecord(AShareRecord):
     """每日复权因子。"""
 
     trade_date: date
-    adj_factor: float = Field(gt=0)
+    cumulative_factor: float = Field(gt=0)
 
 
 class DailyBasicRecord(AShareRecord):
