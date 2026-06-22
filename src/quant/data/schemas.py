@@ -78,7 +78,7 @@ class DailyOHLCVRecord(AShareRecord, PriceRangeMixin):
     """包含 A 股交易状态标记的股票日线行情。"""
 
     trade_date: date
-    pre_close: float | None = Field(default=None, gt=0)
+    pre_close: float | None = Field(default=None)
     change: float | None = None
     pct_chg: float | None = None
     volume: float = Field(ge=0)

@@ -29,11 +29,11 @@ def main() -> None:
         processed_dir=config.paths.processed_dir,
     )
     manager.initialize()
-    write_csv_in_batches(
-        file_path="./users.csv",
-        total=10000,
-        batch_size=1000,
-    )
+    # write_csv_in_batches(
+    #     file_path="./users.csv",
+    #     total=10000,
+    #     batch_size=1000,
+    # )
 
 
 def generate_rows(total: int, batch_size: int) -> Iterator[list[tuple[int, str]]]:
