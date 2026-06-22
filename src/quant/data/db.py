@@ -19,6 +19,7 @@ import duckdb
 from duckdb import DuckDBPyConnection
 from loguru import logger
 
+from quant.data.fields import COLUMN_COMMENTS, RELATION_COMMENTS
 from quant.utils import format_duckdb_path
 
 
@@ -38,7 +39,6 @@ PARQUET_DATASETS = (
     ParquetDataset("v_fundamental", "fundamental"),
     ParquetDataset("v_factors", "factors"),
 )
-
 
 class DuckDBManager:
     """管理 DuckDB 连接, 实体表和 Parquet 视图。"""
@@ -62,6 +62,7 @@ class DuckDBManager:
             self._create_tables(conn)
             self._register_parquet_views()
             self._create_derived_views(conn)
+            self._apply_relation_comments(conn)
 
     def close(self) -> None:
         """关闭当前活动的 DuckDB 连接。"""
@@ -254,9 +255,37 @@ class DuckDBManager:
         """
         if self._conn is None:
             self.connect()
-            return
+        assert self._conn is not None
         self._register_parquet_views()
+        self._create_derived_views(self._conn)
+        self._apply_relation_comments(self._conn)
         logger.info("Parquet 视图已刷新")
+
+    def _apply_relation_comments(self, conn: DuckDBPyConnection) -> None:
+        """给已存在的 DuckDB 表和视图补充中文注释。"""
+        for relation_name, relation_comment in RELATION_COMMENTS.items():
+            relation_kind = _relation_comment_kind(conn, relation_name)
+            if relation_kind is None:
+                continue
+
+            conn.execute(
+                f"""
+                COMMENT ON {relation_kind} {_quote_identifier(relation_name)}
+                IS '{_quote_comment(relation_comment)}'
+                """
+            )
+
+            existing_columns = _relation_columns(conn, relation_name)
+            for column_name, column_comment in COLUMN_COMMENTS.get(relation_name, {}).items():
+                if column_name not in existing_columns:
+                    continue
+                conn.execute(
+                    f"""
+                    COMMENT ON COLUMN
+                    {_quote_identifier(relation_name)}.{_quote_identifier(column_name)}
+                    IS '{_quote_comment(column_comment)}'
+                    """
+                )
 
 
 def _relation_exists(conn: DuckDBPyConnection, relation_name: str) -> bool:
@@ -270,3 +299,42 @@ def _relation_exists(conn: DuckDBPyConnection, relation_name: str) -> bool:
         [relation_name],
     ).fetchone()
     return bool(result and result[0])
+
+
+def _relation_comment_kind(conn: DuckDBPyConnection, relation_name: str) -> str | None:
+    """返回 COMMENT ON 语句需要的关系类型。"""
+    result = conn.execute(
+        """
+        SELECT table_type
+        FROM information_schema.tables
+        WHERE table_name = ?
+        """,
+        [relation_name],
+    ).fetchone()
+    if result is None:
+        return None
+    return "VIEW" if result[0] == "VIEW" else "TABLE"
+
+
+def _relation_columns(conn: DuckDBPyConnection, relation_name: str) -> set[str]:
+    """返回关系中已经存在的字段名。"""
+    rows = conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = ?
+        """,
+        [relation_name],
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _quote_identifier(identifier: str) -> str:
+    """转义 DuckDB 标识符。"""
+    escaped = identifier.replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _quote_comment(comment: str) -> str:
+    """转义 DuckDB 注释文本。"""
+    return comment.replace("'", "''")

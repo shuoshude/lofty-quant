@@ -61,6 +61,14 @@ def test_daily_ohlcv_rejects_negative_volume() -> None:
         )
 
 
+def test_daily_ohlcv_schema_contains_chinese_field_descriptions() -> None:
+    schema = DailyOHLCVRecord.model_json_schema()
+
+    assert schema["properties"]["trade_date"]["description"] == "交易日"
+    assert schema["properties"]["close"]["description"] == "收盘价"
+    assert schema["properties"]["limit_status"]["description"] == "涨跌停状态"
+
+
 def test_adj_factor_record_uses_standard_cumulative_factor() -> None:
     record = AdjFactorRecord(
         ts_code="000001.SZ",

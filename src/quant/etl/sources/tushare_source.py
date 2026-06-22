@@ -17,6 +17,14 @@ from pydantic import ValidationError
 
 from quant.config import QuantConfig
 from quant.data.db import DuckDBManager
+from quant.data.fields import (
+    ADJ_FACTOR_COLUMNS,
+    DAILY_OHLCV_COLUMNS,
+    TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
+    TUSHARE_ADJ_FACTOR_REQUIRED_COLUMNS,
+    TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
+    TUSHARE_DAILY_OHLCV_REQUIRED_COLUMNS,
+)
 from quant.data.repository import QuantRepository
 from quant.data.schemas import AdjFactorRecord, DailyOHLCVRecord
 from quant.etl.etl_model import ETLTask
@@ -26,48 +34,6 @@ from quant.etl.storage import replace_table_dataframe
 from quant.utils import build_raw_path
 
 TUSHARE_REQUEST_SLEEP_SECONDS = 0.2
-DAILY_OHLCV_RAW_COLUMNS = (
-    "ts_code",
-    "trade_date",
-    "open",
-    "high",
-    "low",
-    "close",
-    "pre_close",
-    "change",
-    "pct_chg",
-    "vol",
-    "amount",
-)
-DAILY_OHLCV_REQUIRED_RAW_COLUMNS = (
-    "ts_code",
-    "trade_date",
-    "open",
-    "high",
-    "low",
-    "close",
-    "vol",
-    "amount",
-)
-DAILY_OHLCV_PROCESSED_COLUMNS = (
-    "ts_code",
-    "trade_date",
-    "open",
-    "high",
-    "low",
-    "close",
-    "pre_close",
-    "change",
-    "pct_chg",
-    "volume",
-    "amount",
-    "is_suspended",
-    "is_st",
-    "limit_status",
-)
-ADJ_FACTOR_RAW_COLUMNS = ("ts_code", "trade_date", "adj_factor")
-ADJ_FACTOR_REQUIRED_RAW_COLUMNS = ("ts_code", "trade_date", "adj_factor")
-ADJ_FACTOR_PROCESSED_COLUMNS = ("ts_code", "trade_date", "cumulative_factor")
 MISSING_TRADE_CALENDAR_MESSAGE = "请先加载交易日历后再拉取日线行情"
 
 
@@ -123,7 +89,7 @@ class TushareClient:
         for trade_date in trade_dates:
             trade_date_text = trade_date.strftime("%Y%m%d")
             if _should_skip_existing_daily_raw(self._config, task, trade_date):
-                yield trade_date, pd.DataFrame(columns=DAILY_OHLCV_RAW_COLUMNS)
+                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_OHLCV_RAW_COLUMNS)
                 continue
 
             _sleep_before_request()
@@ -151,7 +117,7 @@ class TushareClient:
                     "Tushare 日线行情返回为空, 写出空 raw CSV 表头: trade_date={}",
                     trade_date_text,
                 )
-                yield trade_date, pd.DataFrame(columns=DAILY_OHLCV_RAW_COLUMNS)
+                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_OHLCV_RAW_COLUMNS)
                 continue
 
             yield trade_date, df
@@ -173,7 +139,7 @@ class TushareClient:
         for trade_date in trade_dates:
             trade_date_text = trade_date.strftime("%Y%m%d")
             if _should_skip_existing_daily_raw(self._config, task, trade_date):
-                yield trade_date, pd.DataFrame(columns=ADJ_FACTOR_RAW_COLUMNS)
+                yield trade_date, pd.DataFrame(columns=TUSHARE_ADJ_FACTOR_RAW_COLUMNS)
                 continue
 
             _sleep_before_request()
@@ -201,7 +167,7 @@ class TushareClient:
                     "Tushare 复权因子返回为空, 写出空 raw CSV 表头: trade_date={}",
                     trade_date_text,
                 )
-                yield trade_date, pd.DataFrame(columns=ADJ_FACTOR_RAW_COLUMNS)
+                yield trade_date, pd.DataFrame(columns=TUSHARE_ADJ_FACTOR_RAW_COLUMNS)
                 continue
 
             yield trade_date, df
@@ -277,7 +243,7 @@ def load_daily_ohlcv(config: QuantConfig, task: ETLTask) -> int:
         normalize_frame=lambda raw_df: normalize_daily_ohlcv_df(raw_df, task),
         date_column="trade_date",
         key_columns=["ts_code", "trade_date"],
-        columns=DAILY_OHLCV_PROCESSED_COLUMNS,
+        columns=DAILY_OHLCV_COLUMNS,
         dry_run=task.dry_run,
     )
     for output_path, written_count in sorted(result.written_paths.items()):
@@ -304,7 +270,7 @@ def load_adj_factor(config: QuantConfig, task: ETLTask) -> int:
         normalize_frame=lambda raw_df: normalize_adj_factor_df(raw_df, task),
         date_column="trade_date",
         key_columns=["ts_code", "trade_date"],
-        columns=ADJ_FACTOR_PROCESSED_COLUMNS,
+        columns=ADJ_FACTOR_COLUMNS,
         dry_run=task.dry_run,
     )
     for output_path, written_count in sorted(result.written_paths.items()):
@@ -324,7 +290,7 @@ def archive_daily_ohlcv_year(config: QuantConfig, year: int) -> Path:
         "ohlcv",
         year,
         key_columns=["ts_code", "trade_date"],
-        columns=DAILY_OHLCV_PROCESSED_COLUMNS,
+        columns=DAILY_OHLCV_COLUMNS,
     )
     logger.bind(module="etl").info(
         "日线行情年度归档完成: year={}, 路径={}",
@@ -360,7 +326,7 @@ def normalize_daily_ohlcv_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     """将 Tushare 日线 raw DataFrame 向量化转换为项目标准表结构。"""
     _require_daily_ohlcv_columns(raw_df)
     if raw_df.empty:
-        return pd.DataFrame(columns=DAILY_OHLCV_PROCESSED_COLUMNS)
+        return pd.DataFrame(columns=DAILY_OHLCV_COLUMNS)
 
     output = pd.DataFrame(index=raw_df.index)
     output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
@@ -384,14 +350,14 @@ def normalize_daily_ohlcv_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     output["is_suspended"] = False
     output["is_st"] = False
     output["limit_status"] = "none"
-    return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_PROCESSED_COLUMNS)])
+    return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_COLUMNS)])
 
 
 def normalize_adj_factor_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     """将 Tushare 复权因子 raw DataFrame 转换为项目标准表结构。"""
     _require_adj_factor_columns(raw_df)
     if raw_df.empty:
-        return pd.DataFrame(columns=ADJ_FACTOR_PROCESSED_COLUMNS)
+        return pd.DataFrame(columns=ADJ_FACTOR_COLUMNS)
 
     output = pd.DataFrame(index=raw_df.index)
     output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
@@ -402,7 +368,7 @@ def normalize_adj_factor_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
         field_name="adj_factor",
     )
 
-    return _validate_adj_factor_contract(output.loc[:, list(ADJ_FACTOR_PROCESSED_COLUMNS)])
+    return _validate_adj_factor_contract(output.loc[:, list(ADJ_FACTOR_COLUMNS)])
 
 
 def _validate_daily_ohlcv_contract(df: DataFrame) -> DataFrame:
@@ -477,7 +443,7 @@ def _require_columns(df: DataFrame, columns: Sequence[str]) -> None:
 def _require_daily_ohlcv_columns(df: DataFrame) -> None:
     """校验日线行情 raw DataFrame 必须包含核心字段。"""
     missing_columns = [
-        column for column in DAILY_OHLCV_REQUIRED_RAW_COLUMNS if column not in df.columns
+        column for column in TUSHARE_DAILY_OHLCV_REQUIRED_COLUMNS if column not in df.columns
     ]
     if missing_columns:
         raise ValueError(f"日线行情 raw 缺少字段: {missing_columns}")
@@ -486,7 +452,7 @@ def _require_daily_ohlcv_columns(df: DataFrame) -> None:
 def _require_adj_factor_columns(df: DataFrame) -> None:
     """校验复权因子 raw DataFrame 必须包含核心字段。"""
     missing_columns = [
-        column for column in ADJ_FACTOR_REQUIRED_RAW_COLUMNS if column not in df.columns
+        column for column in TUSHARE_ADJ_FACTOR_REQUIRED_COLUMNS if column not in df.columns
     ]
     if missing_columns:
         raise ValueError(f"复权因子 raw 缺少字段: {missing_columns}")

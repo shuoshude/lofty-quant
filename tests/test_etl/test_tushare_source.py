@@ -6,6 +6,7 @@ import pytest
 
 from quant.config import PathsConfig, ProjectConfig, QuantConfig, SecretsSettings
 from quant.data.db import DuckDBManager
+from quant.data.fields import TUSHARE_ADJ_FACTOR_RAW_COLUMNS, TUSHARE_DAILY_OHLCV_RAW_COLUMNS
 from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
 from quant.etl.sources import tushare_source
@@ -144,7 +145,7 @@ def test_tushare_source_daily_ohlcv_returns_empty_columns(
 
     df = frames_by_date[date(2024, 1, 2)]
     assert df.empty
-    assert list(df.columns) == list(tushare_source.DAILY_OHLCV_RAW_COLUMNS)
+    assert list(df.columns) == list(TUSHARE_DAILY_OHLCV_RAW_COLUMNS)
 
 
 def test_tushare_source_fetches_adj_factor_from_open_trade_dates(
@@ -259,7 +260,7 @@ def test_tushare_source_adj_factor_returns_empty_columns(
 
     df = frames_by_date[date(2024, 1, 2)]
     assert df.empty
-    assert list(df.columns) == list(tushare_source.ADJ_FACTOR_RAW_COLUMNS)
+    assert list(df.columns) == list(TUSHARE_ADJ_FACTOR_RAW_COLUMNS)
 
 
 def test_tushare_source_daily_ohlcv_requires_trade_calendar(

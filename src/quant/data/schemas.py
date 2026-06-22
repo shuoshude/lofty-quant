@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from quant.data.fields import ADJ_FACTOR_FIELD_COMMENTS, DAILY_OHLCV_FIELD_COMMENTS
+
 TsCode = str
 LimitStatus = Literal["up", "down", "none"]
 
@@ -16,7 +18,7 @@ class AShareRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    ts_code: TsCode
+    ts_code: TsCode = Field(description=DAILY_OHLCV_FIELD_COMMENTS["ts_code"])
 
     @field_validator("ts_code")
     @classmethod
@@ -34,13 +36,13 @@ class AShareRecord(BaseModel):
 class SecurityRecord(AShareRecord):
     """证券主数据。"""
 
-    symbol: str
-    name: str
-    exchange: str
-    market: str | None = None
-    list_date: date | None = None
-    delist_date: date | None = None
-    is_active: bool = True
+    symbol: str = Field(description="证券数字代码")
+    name: str = Field(description="证券简称")
+    exchange: str = Field(description="交易所代码")
+    market: str | None = Field(default=None, description="市场板块")
+    list_date: date | None = Field(default=None, description="上市日期")
+    delist_date: date | None = Field(default=None, description="退市日期")
+    is_active: bool = Field(default=True, description="是否仍处于活跃交易状态")
 
 
 class TradeCalendarRecord(BaseModel):
@@ -48,19 +50,19 @@ class TradeCalendarRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    exchange: str
-    cal_date: date
-    is_open: bool
-    pretrade_date: date | None = None
+    exchange: str = Field(description="交易所代码")
+    cal_date: date = Field(description="自然日")
+    is_open: bool = Field(description="是否开市")
+    pretrade_date: date | None = Field(default=None, description="上一交易日")
 
 
 class PriceRangeMixin(BaseModel):
     """OHLC 价格区间通用校验。"""
 
-    open: float = Field(gt=0)
-    high: float = Field(gt=0)
-    low: float = Field(gt=0)
-    close: float = Field(gt=0)
+    open: float = Field(gt=0, description=DAILY_OHLCV_FIELD_COMMENTS["open"])
+    high: float = Field(gt=0, description=DAILY_OHLCV_FIELD_COMMENTS["high"])
+    low: float = Field(gt=0, description=DAILY_OHLCV_FIELD_COMMENTS["low"])
+    close: float = Field(gt=0, description=DAILY_OHLCV_FIELD_COMMENTS["close"])
 
     @model_validator(mode="after")
     def validate_price_range(self) -> PriceRangeMixin:
@@ -77,78 +79,90 @@ class PriceRangeMixin(BaseModel):
 class DailyOHLCVRecord(AShareRecord, PriceRangeMixin):
     """包含 A 股交易状态标记的股票日线行情。"""
 
-    trade_date: date
-    pre_close: float | None = Field(default=None)
-    change: float | None = None
-    pct_chg: float | None = None
-    volume: float = Field(ge=0)
-    amount: float = Field(ge=0)
-    is_suspended: bool = False
-    is_st: bool = False
-    limit_status: LimitStatus = "none"
+    trade_date: date = Field(description=DAILY_OHLCV_FIELD_COMMENTS["trade_date"])
+    pre_close: float | None = Field(
+        default=None,
+        description=DAILY_OHLCV_FIELD_COMMENTS["pre_close"],
+    )
+    change: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["change"])
+    pct_chg: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["pct_chg"])
+    volume: float = Field(ge=0, description=DAILY_OHLCV_FIELD_COMMENTS["volume"])
+    amount: float = Field(ge=0, description=DAILY_OHLCV_FIELD_COMMENTS["amount"])
+    is_suspended: bool = Field(
+        default=False,
+        description=DAILY_OHLCV_FIELD_COMMENTS["is_suspended"],
+    )
+    is_st: bool = Field(default=False, description=DAILY_OHLCV_FIELD_COMMENTS["is_st"])
+    limit_status: LimitStatus = Field(
+        default="none",
+        description=DAILY_OHLCV_FIELD_COMMENTS["limit_status"],
+    )
 
 
 class AdjFactorRecord(AShareRecord):
     """每日复权因子。"""
 
-    trade_date: date
-    cumulative_factor: float = Field(gt=0)
+    trade_date: date = Field(description=ADJ_FACTOR_FIELD_COMMENTS["trade_date"])
+    cumulative_factor: float = Field(
+        gt=0,
+        description=ADJ_FACTOR_FIELD_COMMENTS["cumulative_factor"],
+    )
 
 
 class DailyBasicRecord(AShareRecord):
     """Tushare 风格的每日估值和股本数据。"""
 
-    trade_date: date
-    turnover_rate: float | None = Field(default=None, ge=0)
-    volume_ratio: float | None = Field(default=None, ge=0)
-    pe: float | None = None
-    pe_ttm: float | None = None
-    pb: float | None = None
-    ps: float | None = None
-    ps_ttm: float | None = None
-    total_share: float | None = Field(default=None, ge=0)
-    float_share: float | None = Field(default=None, ge=0)
-    free_share: float | None = Field(default=None, ge=0)
-    total_mv: float | None = Field(default=None, ge=0)
-    circ_mv: float | None = Field(default=None, ge=0)
+    trade_date: date = Field(description="交易日")
+    turnover_rate: float | None = Field(default=None, ge=0, description="换手率")
+    volume_ratio: float | None = Field(default=None, ge=0, description="量比")
+    pe: float | None = Field(default=None, description="市盈率")
+    pe_ttm: float | None = Field(default=None, description="滚动市盈率")
+    pb: float | None = Field(default=None, description="市净率")
+    ps: float | None = Field(default=None, description="市销率")
+    ps_ttm: float | None = Field(default=None, description="滚动市销率")
+    total_share: float | None = Field(default=None, ge=0, description="总股本")
+    float_share: float | None = Field(default=None, ge=0, description="流通股本")
+    free_share: float | None = Field(default=None, ge=0, description="自由流通股本")
+    total_mv: float | None = Field(default=None, ge=0, description="总市值")
+    circ_mv: float | None = Field(default=None, ge=0, description="流通市值")
 
 
 class IndexDailyRecord(AShareRecord, PriceRangeMixin):
     """指数日线行情。"""
 
-    trade_date: date
-    pre_close: float | None = Field(default=None, gt=0)
-    change: float | None = None
-    pct_chg: float | None = None
-    volume: float = Field(ge=0)
-    amount: float = Field(ge=0)
+    trade_date: date = Field(description="交易日")
+    pre_close: float | None = Field(default=None, gt=0, description="前收盘点位")
+    change: float | None = Field(default=None, description="涨跌额")
+    pct_chg: float | None = Field(default=None, description="涨跌幅, 单位为百分比")
+    volume: float = Field(ge=0, description="成交量")
+    amount: float = Field(ge=0, description="成交额")
 
 
 class FundamentalRecord(AShareRecord):
     """按公告日期归档的基本面时点快照。"""
 
-    ann_date: date
-    report_date: date
-    report_type: str | None = None
-    pe_ttm: float | None = None
-    pb: float | None = None
-    ps_ttm: float | None = None
-    roe: float | None = None
-    roa: float | None = None
-    gross_margin: float | None = None
-    netprofit_yoy: float | None = None
-    revenue_yoy: float | None = None
-    debt_to_assets: float | None = None
-    ocf_to_revenue: float | None = None
+    ann_date: date = Field(description="公告日期")
+    report_date: date = Field(description="报告期")
+    report_type: str | None = Field(default=None, description="报告类型")
+    pe_ttm: float | None = Field(default=None, description="滚动市盈率")
+    pb: float | None = Field(default=None, description="市净率")
+    ps_ttm: float | None = Field(default=None, description="滚动市销率")
+    roe: float | None = Field(default=None, description="净资产收益率")
+    roa: float | None = Field(default=None, description="总资产收益率")
+    gross_margin: float | None = Field(default=None, description="毛利率")
+    netprofit_yoy: float | None = Field(default=None, description="净利润同比增速")
+    revenue_yoy: float | None = Field(default=None, description="营业收入同比增速")
+    debt_to_assets: float | None = Field(default=None, description="资产负债率")
+    ocf_to_revenue: float | None = Field(default=None, description="经营现金流与收入比")
 
 
 class FactorRecord(AShareRecord):
     """某证券在交易日上的因子计算结果。"""
 
-    trade_date: date
-    factor_name: str
-    factor_value: float
-    factor_version: str = "default"
+    trade_date: date = Field(description="交易日")
+    factor_name: str = Field(description="因子名称")
+    factor_value: float = Field(description="因子值")
+    factor_version: str = Field(default="default", description="因子版本")
 
 
 class ETLManifestRecord(BaseModel):
@@ -156,9 +170,9 @@ class ETLManifestRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    dataset: str
-    trade_date: date | None = None
-    source: str
-    version: str
-    row_count: int = Field(ge=0)
-    loaded_at: datetime
+    dataset: str = Field(description="数据集名称")
+    trade_date: date | None = Field(default=None, description="交易日")
+    source: str = Field(description="数据源名称")
+    version: str = Field(description="数据版本")
+    row_count: int = Field(ge=0, description="加载行数")
+    loaded_at: datetime = Field(description="加载完成时间")
