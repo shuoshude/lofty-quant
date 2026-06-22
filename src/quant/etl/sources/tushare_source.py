@@ -19,14 +19,17 @@ from quant.config import QuantConfig
 from quant.data.db import DuckDBManager
 from quant.data.fields import (
     ADJ_FACTOR_COLUMNS,
+    DAILY_BASIC_COLUMNS,
     DAILY_OHLCV_COLUMNS,
     TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
     TUSHARE_ADJ_FACTOR_REQUIRED_COLUMNS,
+    TUSHARE_DAILY_BASIC_RAW_COLUMNS,
+    TUSHARE_DAILY_BASIC_REQUIRED_COLUMNS,
     TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
     TUSHARE_DAILY_OHLCV_REQUIRED_COLUMNS,
 )
 from quant.data.repository import QuantRepository
-from quant.data.schemas import AdjFactorRecord, DailyOHLCVRecord
+from quant.data.schemas import AdjFactorRecord, DailyBasicRecord, DailyOHLCVRecord
 from quant.etl.etl_model import ETLTask
 from quant.etl.fetch import find_raw_files, read_raw_csv
 from quant.etl.processed import archive_daily_year, load_daily_raw_csv_to_monthly_parquet
@@ -56,6 +59,8 @@ class TushareClient:
             return self.fetch_daily_ohlcv(task)
         if task.dataset == "adj-factor":
             return self.fetch_adj_factor(task)
+        if task.dataset == "daily-basic":
+            return self.fetch_daily_basic(task)
         raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
     def fetch_trade_calendar(self, task: ETLTask) -> DataFrame:
@@ -177,6 +182,57 @@ class TushareClient:
             len(trade_dates),
         )
 
+    def fetch_daily_basic(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
+        """按本地交易日历逐日拉取 Tushare 每日指标原始数据。"""
+        trade_dates = _load_open_trade_dates(self._config, task)
+        fields = ",".join(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+        logger.bind(module="etl").info(
+            "开始拉取 Tushare 每日指标: exchange={}, 开市日数量={}",
+            task.exchange or "SSE",
+            len(trade_dates),
+        )
+
+        for trade_date in trade_dates:
+            trade_date_text = trade_date.strftime("%Y%m%d")
+            if _should_skip_existing_daily_raw(self._config, task, trade_date):
+                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+                continue
+
+            _sleep_before_request()
+            logger.bind(module="etl").info(
+                "开始调用 Tushare 每日指标接口: trade_date={}",
+                trade_date_text,
+            )
+            try:
+                result = self._pro_api.daily_basic(trade_date=trade_date_text, fields=fields)
+            except Exception:
+                logger.bind(module="etl").exception(
+                    "Tushare 每日指标接口调用失败: trade_date={}",
+                    trade_date_text,
+                )
+                raise
+
+            df = cast(DataFrame, result)
+            logger.bind(module="etl").info(
+                "Tushare 每日指标接口返回完成: trade_date={}, 行数={}",
+                trade_date_text,
+                len(df.index),
+            )
+            if df.empty:
+                logger.bind(module="etl").info(
+                    "Tushare 每日指标返回为空, 写出空 raw CSV 表头: trade_date={}",
+                    trade_date_text,
+                )
+                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+                continue
+
+            yield trade_date, df
+
+        logger.bind(module="etl").info(
+            "Tushare 每日指标按日拉取完成: 交易日数量={}",
+            len(trade_dates),
+        )
+
 
 def load_tushare_data(config: QuantConfig, task: ETLTask) -> int:
     """按数据集加载 Tushare raw CSV。"""
@@ -186,6 +242,8 @@ def load_tushare_data(config: QuantConfig, task: ETLTask) -> int:
         return load_daily_ohlcv(config, task)
     if task.dataset == "adj-factor":
         return load_adj_factor(config, task)
+    if task.dataset == "daily-basic":
+        return load_daily_basic(config, task)
     raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
 
@@ -283,6 +341,33 @@ def load_adj_factor(config: QuantConfig, task: ETLTask) -> int:
     return result.row_count
 
 
+def load_daily_basic(config: QuantConfig, task: ETLTask) -> int:
+    """读取 Tushare 每日指标 raw CSV, 标准化后写入月度 processed Parquet。"""
+    raw_files = find_raw_files(config.paths.raw_dir, task)
+    if not raw_files:
+        raise FileNotFoundError("未找到每日指标 raw CSV 文件")
+
+    result = load_daily_raw_csv_to_monthly_parquet(
+        raw_files,
+        config.paths.processed_dir,
+        "daily_basic",
+        read_frame=read_raw_csv,
+        normalize_frame=lambda raw_df: normalize_daily_basic_df(raw_df, task),
+        date_column="trade_date",
+        key_columns=["ts_code", "trade_date"],
+        columns=DAILY_BASIC_COLUMNS,
+        dry_run=task.dry_run,
+    )
+    for output_path, written_count in sorted(result.written_paths.items()):
+        logger.bind(module="etl").info(
+            "每日指标 processed 月文件写入完成: 路径={}, 新增行数={}",
+            output_path,
+            written_count,
+        )
+
+    return result.row_count
+
+
 def archive_daily_ohlcv_year(config: QuantConfig, year: int) -> Path:
     """将某个已结束年份的月度日线 Parquet 归档为年文件。"""
     year_path = archive_daily_year(
@@ -371,6 +456,38 @@ def normalize_adj_factor_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     return _validate_adj_factor_contract(output.loc[:, list(ADJ_FACTOR_COLUMNS)])
 
 
+def normalize_daily_basic_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
+    """将 Tushare 每日指标 raw DataFrame 转换为项目标准表结构。"""
+    _require_daily_basic_columns(raw_df)
+    if raw_df.empty:
+        return pd.DataFrame(columns=DAILY_BASIC_COLUMNS)
+
+    output = pd.DataFrame(index=raw_df.index)
+    output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
+    output["trade_date"] = _parse_date_series(raw_df["trade_date"], field_name="trade_date")
+    _validate_daily_basic_date_range(output["trade_date"], task)
+
+    for field_name in DAILY_BASIC_COLUMNS:
+        if field_name in {"ts_code", "trade_date"}:
+            continue
+        if field_name in raw_df.columns:
+            output[field_name] = _parse_numeric_series(
+                raw_df[field_name],
+                field_name=field_name,
+                required=False,
+            )
+        else:
+            output[field_name] = None
+
+    # Tushare daily_basic 的特殊标记在 processed 层转成项目标准语义。
+    for field_name in ("pe", "pe_ttm"):
+        output[field_name] = output[field_name].fillna(-1.0)
+    for field_name in ("volume_ratio", "dv_ratio", "dv_ttm"):
+        output[field_name] = output[field_name].fillna(0.0).mask(output[field_name] < 0, 0.0)
+
+    return _validate_daily_basic_contract(output.loc[:, list(DAILY_BASIC_COLUMNS)])
+
+
 def _validate_daily_ohlcv_contract(df: DataFrame) -> DataFrame:
     """使用项目日线数据契约进行最终校验。"""
     errors: list[str] = []
@@ -433,6 +550,37 @@ def _format_adj_factor_validation_error(row: dict[str, Any], exc: ValidationErro
     )
 
 
+def _validate_daily_basic_contract(df: DataFrame) -> DataFrame:
+    """使用项目每日指标契约进行最终校验。"""
+    errors: list[str] = []
+    for row in df.to_dict(orient="records"):
+        row_data = {str(key): value for key, value in row.items()}
+        try:
+            DailyBasicRecord(**row_data)
+        except ValidationError as exc:
+            errors.append(_format_daily_basic_validation_error(row_data, exc))
+            if len(errors) >= 3:
+                break
+
+    if errors:
+        raise ValueError(f"每日指标数据契约校验失败: {'; '.join(errors)}")
+    return df
+
+
+def _format_daily_basic_validation_error(row: dict[str, Any], exc: ValidationError) -> str:
+    """格式化每日指标校验错误, 便于定位异常行。"""
+    error_messages = []
+    for error in exc.errors()[:3]:
+        location = ".".join(str(part) for part in error.get("loc", ())) or "-"
+        error_messages.append(f"{location}: {error.get('msg', '-')}")
+
+    return (
+        f"ts_code={row.get('ts_code', '-')}, "
+        f"trade_date={row.get('trade_date', '-')}, "
+        f"错误={', '.join(error_messages)}"
+    )
+
+
 def _require_columns(df: DataFrame, columns: Sequence[str]) -> None:
     """校验 raw DataFrame 必须包含指定字段。"""
     missing_columns = [column for column in columns if column not in df.columns]
@@ -458,6 +606,15 @@ def _require_adj_factor_columns(df: DataFrame) -> None:
         raise ValueError(f"复权因子 raw 缺少字段: {missing_columns}")
 
 
+def _require_daily_basic_columns(df: DataFrame) -> None:
+    """校验每日指标 raw DataFrame 必须包含核心字段。"""
+    missing_columns = [
+        column for column in TUSHARE_DAILY_BASIC_REQUIRED_COLUMNS if column not in df.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"每日指标 raw 缺少字段: {missing_columns}")
+
+
 def _validate_daily_ohlcv_date_range(series: pd.Series, task: ETLTask) -> None:
     """校验 raw 中的交易日是否落在任务范围内。"""
     invalid_mask = (series < task.start_date) | (series > task.end_date)
@@ -472,6 +629,14 @@ def _validate_adj_factor_date_range(series: pd.Series, task: ETLTask) -> None:
     if invalid_mask.any():
         invalid_values = series[invalid_mask].head(3).tolist()
         raise ValueError(f"复权因子 raw 日期超出任务范围: {invalid_values}")
+
+
+def _validate_daily_basic_date_range(series: pd.Series, task: ETLTask) -> None:
+    """校验每日指标 raw 中的交易日是否落在任务范围内。"""
+    invalid_mask = (series < task.start_date) | (series > task.end_date)
+    if invalid_mask.any():
+        invalid_values = series[invalid_mask].head(3).tolist()
+        raise ValueError(f"每日指标 raw 日期超出任务范围: {invalid_values}")
 
 
 def _normalize_exchange_series(raw_df: DataFrame, default_exchange: str) -> pd.Series:

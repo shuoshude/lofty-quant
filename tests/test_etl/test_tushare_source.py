@@ -6,7 +6,11 @@ import pytest
 
 from quant.config import PathsConfig, ProjectConfig, QuantConfig, SecretsSettings
 from quant.data.db import DuckDBManager
-from quant.data.fields import TUSHARE_ADJ_FACTOR_RAW_COLUMNS, TUSHARE_DAILY_OHLCV_RAW_COLUMNS
+from quant.data.fields import (
+    TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
+    TUSHARE_DAILY_BASIC_RAW_COLUMNS,
+    TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
+)
 from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
 from quant.etl.sources import tushare_source
@@ -14,6 +18,7 @@ from quant.etl.sources.tushare_source import (
     TushareClient,
     load_trade_calendar,
     normalize_adj_factor_df,
+    normalize_daily_basic_df,
     normalize_daily_ohlcv_df,
     normalize_trade_calendar_df,
 )
@@ -263,6 +268,131 @@ def test_tushare_source_adj_factor_returns_empty_columns(
     assert list(df.columns) == list(TUSHARE_ADJ_FACTOR_RAW_COLUMNS)
 
 
+def test_tushare_source_fetches_daily_basic_from_open_trade_dates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(
+        config,
+        [
+            ("SSE", date(2024, 1, 2), True, date(2023, 12, 29)),
+            ("SSE", date(2024, 1, 3), False, date(2024, 1, 2)),
+            ("SSE", date(2024, 1, 4), True, date(2024, 1, 2)),
+        ],
+    )
+    daily_basic_calls: list[tuple[str, str]] = []
+    sleep_calls: list[str] = []
+
+    class FakeApi:
+        def daily_basic(self, *, trade_date, fields):
+            daily_basic_calls.append((trade_date, fields))
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": trade_date,
+                        "close": 10.2,
+                        "turnover_rate": 1.5,
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
+
+    task = ETLTask(
+        dataset="daily-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 4),
+        exchange="SSE",
+    )
+
+    frames_by_date = dict(TushareClient(config).fetch_daily_basic(task))
+
+    expected_fields = ",".join(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+    assert daily_basic_calls == [("20240102", expected_fields), ("20240104", expected_fields)]
+    assert sleep_calls == ["sleep", "sleep"]
+    assert list(frames_by_date) == [date(2024, 1, 2), date(2024, 1, 4)]
+    assert frames_by_date[date(2024, 1, 2)]["turnover_rate"].tolist() == [1.5]
+
+
+def test_tushare_source_skips_existing_daily_basic_raw_before_request(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+    task = ETLTask(
+        dataset="daily-basic",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240102", "turnover_rate": "1.5"}]
+        ),
+    )
+    sleep_calls: list[str] = []
+
+    class FakeApi:
+        def daily_basic(self, *, trade_date, fields):
+            raise AssertionError("已有 raw 时不应调用 Tushare daily_basic 接口")
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
+
+    frames_by_date = dict(TushareClient(config).fetch_daily_basic(task))
+
+    assert sleep_calls == []
+    assert list(frames_by_date) == [date(2024, 1, 2)]
+    assert frames_by_date[date(2024, 1, 2)].empty
+
+
+def test_tushare_source_daily_basic_returns_empty_columns(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+
+    class FakeApi:
+        def daily_basic(self, *, trade_date, fields):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    task = ETLTask(
+        dataset="daily-basic",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+
+    frames_by_date = dict(TushareClient(config).fetch_daily_basic(task))
+
+    df = frames_by_date[date(2024, 1, 2)]
+    assert df.empty
+    assert list(df.columns) == list(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+
+
 def test_tushare_source_daily_ohlcv_requires_trade_calendar(
     monkeypatch,
     tmp_path: Path,
@@ -407,6 +537,98 @@ def test_normalize_adj_factor_df_rejects_invalid_rows() -> None:
         normalize_adj_factor_df(make_adj_factor_raw_df(adj_factor="0"), make_adj_factor_task())
 
 
+def test_normalize_daily_basic_df_maps_official_fields() -> None:
+    normalized = normalize_daily_basic_df(make_daily_basic_raw_df(), make_daily_basic_task())
+
+    assert list(normalized.columns) == list(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+    assert normalized.to_dict(orient="records") == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": date(2024, 1, 2),
+            "close": 10.2,
+            "turnover_rate": 1.5,
+            "turnover_rate_f": 2.5,
+            "volume_ratio": 1.2,
+            "pe": 10.0,
+            "pe_ttm": 11.0,
+            "pb": 1.1,
+            "ps": 2.0,
+            "ps_ttm": 2.1,
+            "dv_ratio": 0.5,
+            "dv_ttm": 0.6,
+            "total_share": 100000.0,
+            "float_share": 80000.0,
+            "free_share": 60000.0,
+            "total_mv": 1000000.0,
+            "circ_mv": 800000.0,
+        }
+    ]
+
+
+def test_normalize_daily_basic_df_normalizes_special_markers() -> None:
+    normalized = normalize_daily_basic_df(
+        make_daily_basic_raw_df(
+            pe="",
+            pe_ttm="nan",
+            volume_ratio="-1",
+            dv_ratio="-1",
+            dv_ttm="",
+        ),
+        make_daily_basic_task(),
+    )
+
+    row = normalized.iloc[0].to_dict()
+    assert row["pe"] == -1.0
+    assert row["pe_ttm"] == -1.0
+    assert row["volume_ratio"] == 0.0
+    assert row["dv_ratio"] == 0.0
+    assert row["dv_ttm"] == 0.0
+
+    normalized_loss = normalize_daily_basic_df(
+        make_daily_basic_raw_df(
+            pe="-1",
+            pe_ttm="-1",
+            volume_ratio="",
+            dv_ratio="0",
+            dv_ttm="0",
+        ),
+        make_daily_basic_task(),
+    )
+
+    loss_row = normalized_loss.iloc[0].to_dict()
+    assert loss_row["pe"] == -1.0
+    assert loss_row["pe_ttm"] == -1.0
+    assert loss_row["volume_ratio"] == 0.0
+    assert loss_row["dv_ratio"] == 0.0
+    assert loss_row["dv_ttm"] == 0.0
+
+
+def test_normalize_daily_basic_df_rejects_invalid_rows() -> None:
+    with pytest.raises(ValueError, match="每日指标 raw 缺少字段"):
+        normalize_daily_basic_df(pd.DataFrame([{"ts_code": "000001.SZ"}]), make_daily_basic_task())
+
+    with pytest.raises(ValueError, match="日期字段 trade_date 格式无效"):
+        normalize_daily_basic_df(
+            make_daily_basic_raw_df(trade_date="invalid"),
+            make_daily_basic_task(),
+        )
+
+    with pytest.raises(ValueError, match="每日指标 raw 日期超出任务范围"):
+        normalize_daily_basic_df(
+            make_daily_basic_raw_df(trade_date="20240103"),
+            make_daily_basic_task(),
+        )
+
+    with pytest.raises(ValueError, match="数值字段 close 格式无效"):
+        normalize_daily_basic_df(make_daily_basic_raw_df(close="bad"), make_daily_basic_task())
+
+    with pytest.raises(ValueError, match=r"每日指标数据契约校验失败.*turnover_rate"):
+        normalize_daily_basic_df(
+            make_daily_basic_raw_df(turnover_rate="-1.0"),
+            make_daily_basic_task(),
+        )
+
+
 def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Path) -> None:
     config = make_config(tmp_path, token=None)
     task = ETLTask(
@@ -466,6 +688,15 @@ def make_adj_factor_task() -> ETLTask:
     )
 
 
+def make_daily_basic_task() -> ETLTask:
+    return ETLTask(
+        dataset="daily-basic",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+    )
+
+
 def make_daily_raw_df(
     *,
     ts_code: str = "000001.SZ",
@@ -504,6 +735,44 @@ def make_adj_factor_raw_df(
 ) -> pd.DataFrame:
     return pd.DataFrame(
         [{"ts_code": ts_code, "trade_date": trade_date, "adj_factor": adj_factor}]
+    )
+
+
+def make_daily_basic_raw_df(
+    *,
+    ts_code: str = "000001.SZ",
+    trade_date: str = "20240102",
+    close: str = "10.2",
+    turnover_rate: str = "1.5",
+    volume_ratio: str = "1.2",
+    pe: str = "10.0",
+    pe_ttm: str = "11.0",
+    dv_ratio: str = "0.5",
+    dv_ttm: str = "0.6",
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "ts_code": ts_code,
+                "trade_date": trade_date,
+                "close": close,
+                "turnover_rate": turnover_rate,
+                "turnover_rate_f": "2.5",
+                "volume_ratio": volume_ratio,
+                "pe": pe,
+                "pe_ttm": pe_ttm,
+                "pb": "1.1",
+                "ps": "2.0",
+                "ps_ttm": "2.1",
+                "dv_ratio": dv_ratio,
+                "dv_ttm": dv_ttm,
+                "total_share": "100000.0",
+                "float_share": "80000.0",
+                "free_share": "60000.0",
+                "total_mv": "1000000.0",
+                "circ_mv": "800000.0",
+            }
+        ]
     )
 
 

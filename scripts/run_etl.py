@@ -20,7 +20,7 @@ app = typer.Typer(help="lofty-quant ETL 轻量入口")
 
 DatasetArg = Annotated[
     str,
-    typer.Argument(help="数据集名称, 例如 daily-ohlcv、adj-factor 或 trade-calendar"),
+    typer.Argument(help="数据集名称, 例如 daily-ohlcv、daily-basic、adj-factor 或 trade-calendar"),
 ]
 SourceOption = Annotated[str, typer.Option("--source", "-s", help="数据源名称")]
 ConfigDirOption = Annotated[str | None, typer.Option("--config-dir", help="配置目录")]
@@ -195,6 +195,23 @@ def status(
         typer.echo(f"证券数: {state['security_count']}")
         return
 
+    if dataset == "daily-basic":
+        state = _get_daily_basic_status(config)
+        logger.bind(module="etl").info(
+            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
+            dataset,
+            source or "*",
+            state["row_count"],
+        )
+        typer.echo(f"数据集: {dataset}")
+        typer.echo(f"数据源: {source or '*'}")
+        typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
+        typer.echo(f"结束日期: {_format_optional_value(state['end_date'])}")
+        typer.echo(f"指标行数: {state['row_count']}")
+        typer.echo(f"交易日数: {state['trade_date_count']}")
+        typer.echo(f"证券数: {state['security_count']}")
+        return
+
     raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
 
 
@@ -257,6 +274,15 @@ def _get_adj_factor_status(config: QuantConfig) -> dict[str, object]:
         config,
         dataset_dir_name="adj_factor",
         view_name="v_adj_factor",
+    )
+
+
+def _get_daily_basic_status(config: QuantConfig) -> dict[str, object]:
+    """从每日指标 processed Parquet 聚合真实状态。"""
+    return _get_daily_processed_status(
+        config,
+        dataset_dir_name="daily_basic",
+        view_name="v_daily_basic",
     )
 
 

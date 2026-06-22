@@ -3,7 +3,13 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from quant.data.schemas import AdjFactorRecord, DailyOHLCVRecord, FactorRecord, FundamentalRecord
+from quant.data.schemas import (
+    AdjFactorRecord,
+    DailyBasicRecord,
+    DailyOHLCVRecord,
+    FactorRecord,
+    FundamentalRecord,
+)
 
 
 def test_daily_ohlcv_rejects_invalid_ts_code() -> None:
@@ -83,6 +89,65 @@ def test_adj_factor_record_uses_standard_cumulative_factor() -> None:
             ts_code="000001.SZ",
             trade_date=date(2024, 1, 2),
             cumulative_factor=0.0,
+        )
+
+
+def test_daily_basic_schema_contains_official_field_descriptions() -> None:
+    schema = DailyBasicRecord.model_json_schema()
+
+    assert schema["properties"]["close"]["description"] == "当日收盘价"
+    assert schema["properties"]["turnover_rate_f"]["description"] == "自由流通股换手率"
+    assert schema["properties"]["dv_ratio"]["description"] == "股息率"
+    assert schema["properties"]["dv_ttm"]["description"] == "滚动股息率"
+
+
+def test_daily_basic_rejects_invalid_ts_code_and_negative_values() -> None:
+    record = DailyBasicRecord(
+        ts_code="000001.SZ",
+        trade_date=date(2024, 1, 2),
+        pe=-1.0,
+        pe_ttm=-1.0,
+        dv_ratio=0.0,
+        dv_ttm=0.0,
+    )
+
+    assert record.pe == -1.0
+    assert record.pe_ttm == -1.0
+    assert record.volume_ratio is None
+
+    with pytest.raises(ValidationError, match="ts_code"):
+        DailyBasicRecord(
+            ts_code="000001",
+            trade_date=date(2024, 1, 2),
+        )
+
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        DailyBasicRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            turnover_rate=-1.0,
+        )
+
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        DailyBasicRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            total_mv=-1.0,
+        )
+
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        DailyBasicRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            volume_ratio=-1.0,
+        )
+
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        DailyBasicRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            dv_ratio=-1.0,
+            dv_ttm=-1.0,
         )
 
 

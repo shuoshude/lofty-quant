@@ -298,6 +298,50 @@ def test_fetch_raw_data_writes_adj_factor_daily_files(monkeypatch, tmp_path: Pat
     ]
 
 
+def test_fetch_raw_data_writes_daily_basic_daily_files(monkeypatch, tmp_path: Path) -> None:
+    config = load_config(config_dir=make_config_dir(tmp_path))
+    task = ETLTask(
+        dataset="daily-basic",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+        exchange="SSE",
+    )
+
+    expected_paths = (
+        config.paths.raw_dir
+        / "tushare"
+        / "daily-basic"
+        / "year=2024"
+        / "month=01"
+        / "daily-basic_tushare_20240102.csv",
+        config.paths.raw_dir
+        / "tushare"
+        / "daily-basic"
+        / "year=2024"
+        / "month=01"
+        / "daily-basic_tushare_20240103.csv",
+    )
+
+    def fake_fetch_tushare_raw(_config, _task):
+        yield date(2024, 1, 2), pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240102", "turnover_rate": 1.5}],
+        )
+        assert expected_paths[0].exists()
+        yield date(2024, 1, 3), pd.DataFrame(
+            [{"ts_code": "000002.SZ", "trade_date": "20240103", "turnover_rate": 2.5}],
+        )
+
+    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
+
+    paths = fetch_raw_data(config, task)
+
+    assert paths == expected_paths
+    assert read_raw_csv(paths[0]).to_dict(orient="records") == [
+        {"ts_code": "000001.SZ", "trade_date": "20240102", "turnover_rate": "1.5"}
+    ]
+
+
 def make_config_dir(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
     config_dir.mkdir(exist_ok=True)

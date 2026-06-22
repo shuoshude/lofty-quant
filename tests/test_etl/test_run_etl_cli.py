@@ -317,6 +317,40 @@ def test_status_command_reads_adj_factor_processed_state(monkeypatch, tmp_path: 
     assert "证券数: 5" in result.output
 
 
+def test_status_command_reads_daily_basic_processed_state(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+
+    def fake_status(config):
+        return {
+            "start_date": "2024-01-02",
+            "end_date": "2024-01-31",
+            "row_count": 100,
+            "trade_date_count": 22,
+            "security_count": 5,
+        }
+
+    monkeypatch.setattr(run_etl, "_get_daily_basic_status", fake_status)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "status",
+            "daily-basic",
+            "--source",
+            "tushare",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "数据集: daily-basic" in result.output
+    assert "指标行数: 100" in result.output
+    assert "交易日数: 22" in result.output
+    assert "证券数: 5" in result.output
+
+
 def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
     run_etl = load_run_etl_module()
     config = load_config(config_dir=make_config_dir(tmp_path))
@@ -337,6 +371,39 @@ def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
     ).to_parquet(parquet_path, index=False)
 
     state = run_etl._get_daily_ohlcv_status(config)
+
+    assert state["start_date"] == date(2024, 1, 2)
+    assert state["end_date"] == date(2024, 1, 3)
+    assert state["row_count"] == 3
+    assert state["trade_date_count"] == 2
+    assert state["security_count"] == 2
+
+
+def test_daily_basic_status_reads_processed_view(tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config = load_config(config_dir=make_config_dir(tmp_path))
+
+    empty_state = run_etl._get_daily_basic_status(config)
+
+    assert empty_state["row_count"] == 0
+
+    parquet_path = (
+        config.paths.processed_dir
+        / "daily_basic"
+        / "year=2024"
+        / "month=01"
+        / "daily_basic_202401.parquet"
+    )
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": date(2024, 1, 2), "close": 10.0},
+            {"ts_code": "000002.SZ", "trade_date": date(2024, 1, 2), "close": 20.0},
+            {"ts_code": "000001.SZ", "trade_date": date(2024, 1, 3), "close": 10.5},
+        ]
+    ).to_parquet(parquet_path, index=False)
+
+    state = run_etl._get_daily_basic_status(config)
 
     assert state["start_date"] == date(2024, 1, 2)
     assert state["end_date"] == date(2024, 1, 3)

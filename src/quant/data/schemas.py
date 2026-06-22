@@ -7,7 +7,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from quant.data.fields import ADJ_FACTOR_FIELD_COMMENTS, DAILY_OHLCV_FIELD_COMMENTS
+from quant.data.fields import (
+    ADJ_FACTOR_FIELD_COMMENTS,
+    DAILY_BASIC_FIELD_COMMENTS,
+    DAILY_OHLCV_FIELD_COMMENTS,
+)
 
 TsCode = str
 LimitStatus = Literal["up", "down", "none"]
@@ -112,19 +116,63 @@ class AdjFactorRecord(AShareRecord):
 class DailyBasicRecord(AShareRecord):
     """Tushare 风格的每日估值和股本数据。"""
 
-    trade_date: date = Field(description="交易日")
-    turnover_rate: float | None = Field(default=None, ge=0, description="换手率")
-    volume_ratio: float | None = Field(default=None, ge=0, description="量比")
-    pe: float | None = Field(default=None, description="市盈率")
-    pe_ttm: float | None = Field(default=None, description="滚动市盈率")
-    pb: float | None = Field(default=None, description="市净率")
-    ps: float | None = Field(default=None, description="市销率")
-    ps_ttm: float | None = Field(default=None, description="滚动市销率")
-    total_share: float | None = Field(default=None, ge=0, description="总股本")
-    float_share: float | None = Field(default=None, ge=0, description="流通股本")
-    free_share: float | None = Field(default=None, ge=0, description="自由流通股本")
-    total_mv: float | None = Field(default=None, ge=0, description="总市值")
-    circ_mv: float | None = Field(default=None, ge=0, description="流通市值")
+    trade_date: date = Field(description=DAILY_BASIC_FIELD_COMMENTS["trade_date"])
+    close: float | None = Field(default=None, ge=0, description=DAILY_BASIC_FIELD_COMMENTS["close"])
+    turnover_rate: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["turnover_rate"],
+    )
+    turnover_rate_f: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["turnover_rate_f"],
+    )
+    volume_ratio: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["volume_ratio"],
+    )
+    pe: float | None = Field(default=None, description=DAILY_BASIC_FIELD_COMMENTS["pe"])
+    pe_ttm: float | None = Field(default=None, description=DAILY_BASIC_FIELD_COMMENTS["pe_ttm"])
+    pb: float | None = Field(default=None, description=DAILY_BASIC_FIELD_COMMENTS["pb"])
+    ps: float | None = Field(default=None, description=DAILY_BASIC_FIELD_COMMENTS["ps"])
+    ps_ttm: float | None = Field(default=None, description=DAILY_BASIC_FIELD_COMMENTS["ps_ttm"])
+    dv_ratio: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["dv_ratio"],
+    )
+    dv_ttm: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["dv_ttm"],
+    )
+    total_share: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["total_share"],
+    )
+    float_share: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["float_share"],
+    )
+    free_share: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["free_share"],
+    )
+    total_mv: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["total_mv"],
+    )
+    circ_mv: float | None = Field(
+        default=None,
+        ge=0,
+        description=DAILY_BASIC_FIELD_COMMENTS["circ_mv"],
+    )
 
 
 class IndexDailyRecord(AShareRecord, PriceRangeMixin):

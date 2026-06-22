@@ -30,6 +30,27 @@ TUSHARE_DAILY_OHLCV_REQUIRED_COLUMNS = (
 )
 TUSHARE_ADJ_FACTOR_RAW_COLUMNS = ("ts_code", "trade_date", "adj_factor")
 TUSHARE_ADJ_FACTOR_REQUIRED_COLUMNS = ("ts_code", "trade_date", "adj_factor")
+TUSHARE_DAILY_BASIC_RAW_COLUMNS = (
+    "ts_code",
+    "trade_date",
+    "close",
+    "turnover_rate",
+    "turnover_rate_f",
+    "volume_ratio",
+    "pe",
+    "pe_ttm",
+    "pb",
+    "ps",
+    "ps_ttm",
+    "dv_ratio",
+    "dv_ttm",
+    "total_share",
+    "float_share",
+    "free_share",
+    "total_mv",
+    "circ_mv",
+)
+TUSHARE_DAILY_BASIC_REQUIRED_COLUMNS = ("ts_code", "trade_date")
 
 SECURITY_COLUMNS = (
     "ts_code",
@@ -63,13 +84,17 @@ ADJ_FACTOR_COLUMNS = ("ts_code", "trade_date", "cumulative_factor")
 DAILY_BASIC_COLUMNS = (
     "ts_code",
     "trade_date",
+    "close",
     "turnover_rate",
+    "turnover_rate_f",
     "volume_ratio",
     "pe",
     "pe_ttm",
     "pb",
     "ps",
     "ps_ttm",
+    "dv_ratio",
+    "dv_ttm",
     "total_share",
     "float_share",
     "free_share",
@@ -170,13 +195,17 @@ ADJ_FACTOR_FIELD_COMMENTS = {
 DAILY_BASIC_FIELD_COMMENTS = {
     "ts_code": "证券代码, 使用 Tushare 交易所后缀格式",
     "trade_date": "交易日",
+    "close": "当日收盘价",
     "turnover_rate": "换手率",
+    "turnover_rate_f": "自由流通股换手率",
     "volume_ratio": "量比",
     "pe": "市盈率",
     "pe_ttm": "滚动市盈率",
     "pb": "市净率",
     "ps": "市销率",
     "ps_ttm": "滚动市销率",
+    "dv_ratio": "股息率",
+    "dv_ttm": "滚动股息率",
     "total_share": "总股本",
     "float_share": "流通股本",
     "free_share": "自由流通股本",

@@ -190,7 +190,7 @@ data/processed/ohlcv/year=2024/ohlcv_2024.parquet
 
 ```text
 data/processed/adj_factor/year=2024/month=01/adj_factor_202401.parquet
-data/processed/daily_basic/year=2024/month=01/*.parquet
+data/processed/daily_basic/year=2024/month=01/daily_basic_202401.parquet
 data/processed/index_daily/year=2024/month=01/*.parquet
 data/processed/factors/year=2024/month=01/*.parquet
 ```
@@ -289,6 +289,18 @@ uv run python scripts/run_etl.py load adj-factor \
   --exchange SSE \
   --start-date 20240102 \
   --end-date 20240131
+
+uv run python scripts/run_etl.py fetch daily-basic \
+  --source tushare \
+  --exchange SSE \
+  --start-date 20240102 \
+  --end-date 20240131
+
+uv run python scripts/run_etl.py load daily-basic \
+  --source tushare \
+  --exchange SSE \
+  --start-date 20240102 \
+  --end-date 20240131
 ```
 
 生命周期命令负责编排阶段:
@@ -305,6 +317,8 @@ uv run python scripts/run_etl.py status trade-calendar --source tushare
 uv run python scripts/run_etl.py status daily-ohlcv --source tushare
 
 uv run python scripts/run_etl.py status adj-factor --source tushare
+
+uv run python scripts/run_etl.py status daily-basic --source tushare
 
 uv run python scripts/run_etl.py archive daily-ohlcv \
   --source tushare \
@@ -324,6 +338,7 @@ uv run python scripts/run_etl.py archive daily-ohlcv \
 - **trade-calendar + tushare**:拉取 Tushare 交易日历,保存 raw CSV,加载到 DuckDB `dim_trade_calendar`,并通过 `status` 查询目标表真实状态。
 - **daily-ohlcv + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare 日线接口,每个交易日保存一个 raw CSV;load 时标准化字段并用 Pydantic 契约校验,再写入月度 processed Parquet;已结束年份可归档为年度 Parquet。
 - **adj-factor + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `adj_factor` 接口,每个交易日保存一个 raw CSV;load 时把 Tushare `adj_factor` 标准化为项目字段 `cumulative_factor`,再写入月度 processed Parquet。
+- **daily-basic + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `daily_basic` 接口,每个交易日保存一个 raw CSV;load 时按 Tushare 官方每日指标字段约定标准化并做 Pydantic 契约校验,再写入月度 processed Parquet。
 
 ### raw 层约定
 
@@ -336,13 +351,14 @@ data/raw/tushare/trade-calendar/trade-calendar_tushare.csv
 # 按交易日分文件(每个交易日一个 raw CSV)
 data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240102.csv
 data/raw/tushare/adj-factor/year=2024/month=01/adj-factor_tushare_20240102.csv
+data/raw/tushare/daily-basic/year=2024/month=01/daily-basic_tushare_20240102.csv
 ```
 
 raw 文件是 fetch 阶段的输入缓存,不代表当前完整数据状态;DuckDB 表或 processed Parquet 才是 load 后的事实源。
 
 ### 日频 fetch 的限速与断点续传
 
-拉取 Tushare 日线行情和复权因子前,需要先完成交易日历加载。日频接口会按 `dim_trade_calendar` 中的开市日逐日请求,并在请求之间固定等待 0.2 秒,避免超过 Tushare 每分钟 500 次的限制。fetch 主流程每拉一天就立即落盘一个 raw CSV,不会把整个时间跨度的数据全部堆积在内存中。
+拉取 Tushare 日线行情、复权因子和每日指标前,需要先完成交易日历加载。日频接口会按 `dim_trade_calendar` 中的开市日逐日请求,并在请求之间固定等待 0.2 秒,避免超过 Tushare 每分钟 500 次的限制。fetch 主流程每拉一天就立即落盘一个 raw CSV,不会把整个时间跨度的数据全部堆积在内存中。
 
 `fetch` 默认跳过已存在的 raw 文件(断点续传),需要强制覆盖时加 `--force`:
 
@@ -371,6 +387,16 @@ data/processed/adj_factor/year=2024/month=01/adj_factor_202401.parquet
 
 processed 标准字段固定为 `ts_code`, `trade_date`, `cumulative_factor`。raw 层保留 Tushare 原始字段 `adj_factor`,load 阶段再映射为项目内部标准字段,避免后续 Repository 和回测直接依赖某个数据源的字段含义。
 
+### 每日指标 processed 层约定
+
+```text
+data/processed/daily_basic/year=2024/month=01/daily_basic_202401.parquet
+```
+
+processed 标准字段对齐 Tushare `daily_basic` 官方文档,包括 `close`, `turnover_rate`, `turnover_rate_f`, `volume_ratio`, `pe`, `pe_ttm`, `pb`, `ps`, `ps_ttm`, `dv_ratio`, `dv_ttm`, `total_share`, `float_share`, `free_share`, `total_mv`, `circ_mv`。其中股本单位为万股,市值单位为万元。
+
+raw 层保留 Tushare 原始返回;load 到 processed 时会做项目语义归一化:`pe` 和 `pe_ttm` 空值表示亏损,入库为 `-1`;`volume_ratio` 空值或负标记表示上市不足五日导致量比为空,入库为 `0`;`dv_ratio` 和 `dv_ttm` 空值或负标记表示未发生派息或股息率为 0,入库为 `0`。
+
 ### 数据状态查询
 
 `status` 直接从目标数据实时聚合,不依赖任何状态表:
@@ -378,6 +404,7 @@ processed 标准字段固定为 `ts_code`, `trade_date`, `cumulative_factor`。r
 - `trade-calendar`:从 `dim_trade_calendar` 表聚合交易所、日期范围、开市天数
 - `daily-ohlcv`:从 `data/processed/ohlcv/**/*.parquet` 聚合日期范围、行情行数、交易日数、证券数
 - `adj-factor`:从 `data/processed/adj_factor/**/*.parquet` 聚合日期范围、因子行数、交易日数、证券数
+- `daily-basic`:从 `data/processed/daily_basic/**/*.parquet` 聚合日期范围、指标行数、交易日数、证券数
 
 `etl_manifest` 表仅做兼容保留,当前业务流程不写入也不依赖它。后续如需增量同步基准,再决定是否启用。
 

@@ -323,6 +323,123 @@ def test_load_adj_factor_rejects_missing_raw_and_invalid_rows(tmp_path: Path) ->
         load_raw_data(config, task)
 
 
+def test_load_daily_basic_writes_monthly_processed_parquet(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_daily_basic_raw(config, date(2024, 1, 2), close="10.2")
+
+    row_count = load_raw_data(config, task)
+
+    output_path = daily_basic_month_path(config, 2024, 1)
+    df = pd.read_parquet(output_path)
+
+    assert row_count == 1
+    assert output_path.exists()
+    assert df["ts_code"].tolist() == ["000001.SZ"]
+    assert pd.to_datetime(df["trade_date"]).dt.date.tolist() == [date(2024, 1, 2)]
+    assert df["close"].tolist() == [10.2]
+    assert df["turnover_rate_f"].tolist() == [2.5]
+    assert df["dv_ttm"].tolist() == [0.6]
+
+
+def test_load_daily_basic_writes_multiple_month_files(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 31), date(2024, 2, 1))
+    write_daily_basic_raw(config, date(2024, 1, 31), ts_code="000001.SZ")
+    write_daily_basic_raw(config, date(2024, 2, 1), ts_code="000002.SZ")
+
+    row_count = load_raw_data(config, task)
+
+    assert row_count == 2
+    assert daily_basic_month_path(config, 2024, 1).exists()
+    assert daily_basic_month_path(config, 2024, 2).exists()
+
+
+def test_load_daily_basic_overwrites_existing_key(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_daily_basic_raw(config, date(2024, 1, 2), close="10.2")
+    load_raw_data(config, task)
+
+    write_daily_basic_raw(config, date(2024, 1, 2), close="11.2")
+    load_raw_data(config, task)
+
+    df = pd.read_parquet(daily_basic_month_path(config, 2024, 1))
+
+    assert len(df.index) == 1
+    assert df["close"].tolist() == [11.2]
+
+
+def test_load_daily_basic_normalizes_special_markers(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_daily_basic_raw(
+        config,
+        date(2024, 1, 2),
+        volume_ratio="-1.0",
+        pe="",
+        pe_ttm="",
+        dv_ratio="-1.0",
+        dv_ttm="",
+    )
+
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(daily_basic_month_path(config, 2024, 1))
+
+    assert row_count == 1
+    assert df["volume_ratio"].tolist() == [0.0]
+    assert df["pe"].tolist() == [-1.0]
+    assert df["pe_ttm"].tolist() == [-1.0]
+    assert df["dv_ratio"].tolist() == [0.0]
+    assert df["dv_ttm"].tolist() == [0.0]
+
+
+def test_load_daily_basic_rejects_missing_raw_and_invalid_rows(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
+
+    with pytest.raises(FileNotFoundError, match="未找到每日指标 raw CSV 文件"):
+        load_raw_data(config, task)
+
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame([{"ts_code": "000001.SZ"}]),
+    )
+    with pytest.raises(ValueError, match="每日指标 raw 缺少字段"):
+        load_raw_data(config, task)
+
+    write_daily_basic_raw(config, date(2024, 1, 2), trade_date="invalid")
+    with pytest.raises(ValueError, match="日期字段 trade_date 格式无效"):
+        load_raw_data(config, task)
+
+    write_daily_basic_raw(config, date(2024, 1, 2), trade_date="20240103")
+    with pytest.raises(ValueError, match="每日指标 raw 日期超出任务范围"):
+        load_raw_data(config, task)
+
+    write_daily_basic_raw(config, date(2024, 1, 2), close="bad")
+    with pytest.raises(ValueError, match="数值字段 close 格式无效"):
+        load_raw_data(config, task)
+
+    write_daily_basic_raw(config, date(2024, 1, 2), turnover_rate="-1.0")
+    with pytest.raises(ValueError, match=r"每日指标数据契约校验失败.*turnover_rate"):
+        load_raw_data(config, task)
+
+
+def test_load_daily_basic_skips_empty_raw(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame(columns=["ts_code", "trade_date"]),
+    )
+
+    row_count = load_raw_data(config, task)
+
+    assert row_count == 0
+    assert not daily_basic_month_path(config, 2024, 1).exists()
+
+
 def test_archive_daily_ohlcv_year_merges_month_files_and_removes_them(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     archive_year = date.today().year - 1
@@ -398,6 +515,15 @@ def adj_factor_task(start_date: date, end_date: date) -> ETLTask:
     )
 
 
+def daily_basic_task(start_date: date, end_date: date) -> ETLTask:
+    return ETLTask(
+        dataset="daily-basic",
+        source="tushare",
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
 def write_daily_raw(
     config: QuantConfig,
     raw_date: date,
@@ -455,6 +581,51 @@ def write_adj_factor_raw(
     )
 
 
+def write_daily_basic_raw(
+    config: QuantConfig,
+    raw_date: date,
+    *,
+    ts_code: str = "000001.SZ",
+    trade_date: str | None = None,
+    close: str = "10.2",
+    turnover_rate: str = "1.5",
+    volume_ratio: str = "1.2",
+    pe: str = "10.0",
+    pe_ttm: str = "11.0",
+    dv_ratio: str = "0.5",
+    dv_ttm: str = "0.6",
+) -> None:
+    task = daily_basic_task(raw_date, raw_date)
+    raw_path = build_raw_path(config.paths.raw_dir, task)
+    write_raw_csv(
+        raw_path,
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": ts_code,
+                    "trade_date": trade_date or raw_date.strftime("%Y%m%d"),
+                    "close": close,
+                    "turnover_rate": turnover_rate,
+                    "turnover_rate_f": "2.5",
+                    "volume_ratio": volume_ratio,
+                    "pe": pe,
+                    "pe_ttm": pe_ttm,
+                    "pb": "1.1",
+                    "ps": "2.0",
+                    "ps_ttm": "2.1",
+                    "dv_ratio": dv_ratio,
+                    "dv_ttm": dv_ttm,
+                    "total_share": "100000.0",
+                    "float_share": "80000.0",
+                    "free_share": "60000.0",
+                    "total_mv": "1000000.0",
+                    "circ_mv": "800000.0",
+                }
+            ]
+        ),
+    )
+
+
 def processed_month_path(config: QuantConfig, year: int, month: int) -> Path:
     return (
         config.paths.processed_dir
@@ -472,6 +643,16 @@ def adj_factor_month_path(config: QuantConfig, year: int, month: int) -> Path:
         / f"year={year}"
         / f"month={month:02d}"
         / f"adj_factor_{year}{month:02d}.parquet"
+    )
+
+
+def daily_basic_month_path(config: QuantConfig, year: int, month: int) -> Path:
+    return (
+        config.paths.processed_dir
+        / "daily_basic"
+        / f"year={year}"
+        / f"month={month:02d}"
+        / f"daily_basic_{year}{month:02d}.parquet"
     )
 
 

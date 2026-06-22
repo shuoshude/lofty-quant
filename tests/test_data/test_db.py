@@ -89,6 +89,29 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
             "factor_version": ["v1"],
         },
     )
+    write_parquet(
+        processed_dir / "daily_basic" / "year=2024" / "month=01" / "daily_basic.parquet",
+        {
+            "ts_code": ["000001.SZ"],
+            "trade_date": [date(2024, 1, 2)],
+            "close": [10.5],
+            "turnover_rate": [1.5],
+            "turnover_rate_f": [2.5],
+            "volume_ratio": [1.2],
+            "pe": [10.0],
+            "pe_ttm": [11.0],
+            "pb": [1.1],
+            "ps": [2.0],
+            "ps_ttm": [2.1],
+            "dv_ratio": [0.5],
+            "dv_ttm": [0.6],
+            "total_share": [100000.0],
+            "float_share": [80000.0],
+            "free_share": [60000.0],
+            "total_mv": [1000000.0],
+            "circ_mv": [800000.0],
+        },
+    )
     manager = DuckDBManager(tmp_path / "quant.duckdb", processed_dir)
 
     manager.initialize()
@@ -113,13 +136,19 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
             ["000001.SZ"],
         ).fetchone()[0]
         daily_count = conn.execute("SELECT COUNT(*) FROM v_daily_ohlcv").fetchone()[0]
+        daily_basic_count = conn.execute("SELECT COUNT(*) FROM v_daily_basic").fetchone()[0]
         daily_close_comment = get_column_comment(conn, "v_daily_ohlcv", "close")
+        daily_basic_close_comment = get_column_comment(conn, "v_daily_basic", "close")
+        turnover_rate_f_comment = get_column_comment(conn, "v_daily_basic", "turnover_rate_f")
+        dv_ratio_comment = get_column_comment(conn, "v_daily_basic", "dv_ratio")
+        dv_ttm_comment = get_column_comment(conn, "v_daily_basic", "dv_ttm")
         factor_comment = get_column_comment(conn, "v_adj_factor", "cumulative_factor")
         qfq_comment = get_column_comment(conn, "v_daily_qfq_latest", "qfq_close")
 
     assert {
         "v_daily_ohlcv",
         "v_adj_factor",
+        "v_daily_basic",
         "v_factors",
         "v_daily_hfq",
         "v_daily_qfq_latest",
@@ -128,7 +157,12 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
     assert hfq_close == 21.0
     assert qfq_close == 10.5
     assert daily_count == 2
+    assert daily_basic_count == 1
     assert daily_close_comment == "收盘价"
+    assert daily_basic_close_comment == "当日收盘价"
+    assert turnover_rate_f_comment == "自由流通股换手率"
+    assert dv_ratio_comment == "股息率"
+    assert dv_ttm_comment == "滚动股息率"
     assert factor_comment == "累计复权因子"
     assert qfq_comment == "最新口径前复权收盘价"
 
