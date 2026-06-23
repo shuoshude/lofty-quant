@@ -481,6 +481,52 @@ def test_archive_daily_ohlcv_year_merges_month_files_and_removes_them(tmp_path: 
     assert output_path == year_path
     assert not january_path.exists()
     assert not february_path.exists()
+    assert not january_path.parent.exists()
+    assert not february_path.parent.exists()
+    assert df["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
+    assert df["close"].tolist() == [10.0, 20.0]
+
+
+def test_archive_adj_factor_year_merges_month_files_and_removes_them(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    archive_year = date.today().year - 1
+    january_path = adj_factor_month_path(config, archive_year, 1)
+    february_path = adj_factor_month_path(config, archive_year, 2)
+    year_path = adj_factor_year_path(config, archive_year)
+    write_processed_adj_factor(january_path, archive_year, 1, "000001.SZ", 2.0)
+    write_processed_adj_factor(february_path, archive_year, 2, "000002.SZ", 3.0)
+    write_processed_adj_factor(year_path, archive_year, 1, "000001.SZ", 1.5)
+
+    output_path = TushareSource(config).archive_adj_factor_year(archive_year)
+    df = pd.read_parquet(output_path).sort_values("ts_code").reset_index(drop=True)
+
+    assert output_path == year_path
+    assert not january_path.exists()
+    assert not february_path.exists()
+    assert not january_path.parent.exists()
+    assert not february_path.parent.exists()
+    assert df["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
+    assert df["cumulative_factor"].tolist() == [2.0, 3.0]
+
+
+def test_archive_daily_basic_year_merges_month_files_and_removes_them(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    archive_year = date.today().year - 1
+    january_path = daily_basic_month_path(config, archive_year, 1)
+    february_path = daily_basic_month_path(config, archive_year, 2)
+    year_path = daily_basic_year_path(config, archive_year)
+    write_processed_daily_basic(january_path, archive_year, 1, "000001.SZ", 10.0)
+    write_processed_daily_basic(february_path, archive_year, 2, "000002.SZ", 20.0)
+    write_processed_daily_basic(year_path, archive_year, 1, "000001.SZ", 8.0)
+
+    output_path = TushareSource(config).archive_daily_basic_year(archive_year)
+    df = pd.read_parquet(output_path).sort_values("ts_code").reset_index(drop=True)
+
+    assert output_path == year_path
+    assert not january_path.exists()
+    assert not february_path.exists()
+    assert not january_path.parent.exists()
+    assert not february_path.parent.exists()
     assert df["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
     assert df["close"].tolist() == [10.0, 20.0]
 
@@ -493,6 +539,12 @@ def test_archive_daily_ohlcv_year_rejects_current_year_and_missing_files(tmp_pat
 
     with pytest.raises(FileNotFoundError, match="未找到可归档的月度日频文件"):
         TushareSource(config).archive_daily_ohlcv_year(date.today().year - 1)
+
+    with pytest.raises(ValueError, match="只能归档已结束年份"):
+        TushareSource(config).archive_adj_factor_year(date.today().year)
+
+    with pytest.raises(FileNotFoundError, match="未找到可归档的月度日频文件"):
+        TushareSource(config).archive_daily_basic_year(date.today().year - 1)
 
 
 def test_load_raw_data_rejects_unknown_source(tmp_path: Path) -> None:
@@ -691,6 +743,24 @@ def processed_year_path(config: QuantConfig, year: int) -> Path:
     return config.paths.processed_dir / "ohlcv" / f"year={year}" / f"ohlcv_{year}.parquet"
 
 
+def adj_factor_year_path(config: QuantConfig, year: int) -> Path:
+    return (
+        config.paths.processed_dir
+        / "adj_factor"
+        / f"year={year}"
+        / f"adj_factor_{year}.parquet"
+    )
+
+
+def daily_basic_year_path(config: QuantConfig, year: int) -> Path:
+    return (
+        config.paths.processed_dir
+        / "daily_basic"
+        / f"year={year}"
+        / f"daily_basic_{year}.parquet"
+    )
+
+
 def write_processed_daily(path: Path, year: int, month: int, ts_code: str, close: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
@@ -710,6 +780,59 @@ def write_processed_daily(path: Path, year: int, month: int, ts_code: str, close
                 "is_suspended": False,
                 "is_st": False,
                 "limit_status": "none",
+            }
+        ]
+    ).to_parquet(path, index=False)
+
+
+def write_processed_adj_factor(
+    path: Path,
+    year: int,
+    month: int,
+    ts_code: str,
+    cumulative_factor: float,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": ts_code,
+                "trade_date": date(year, month, 2),
+                "cumulative_factor": cumulative_factor,
+            }
+        ]
+    ).to_parquet(path, index=False)
+
+
+def write_processed_daily_basic(
+    path: Path,
+    year: int,
+    month: int,
+    ts_code: str,
+    close: float,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": ts_code,
+                "trade_date": date(year, month, 2),
+                "close": close,
+                "turnover_rate": 1.5,
+                "turnover_rate_f": 2.5,
+                "volume_ratio": 1.2,
+                "pe": 10.0,
+                "pe_ttm": 11.0,
+                "pb": 1.1,
+                "ps": 2.0,
+                "ps_ttm": 2.1,
+                "dv_ratio": 0.5,
+                "dv_ttm": 0.6,
+                "total_share": 100000.0,
+                "float_share": 80000.0,
+                "free_share": 60000.0,
+                "total_mv": 1000000.0,
+                "circ_mv": 800000.0,
             }
         ]
     ).to_parquet(path, index=False)

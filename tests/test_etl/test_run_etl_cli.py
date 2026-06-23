@@ -167,13 +167,16 @@ def test_archive_command_calls_archive_function(monkeypatch, tmp_path: Path) -> 
 
     from quant.etl.sources import tushare_source
 
-    def fake_archive(self, year):
-        calls.append(f"archive:{self._config.paths.processed_dir.name}:{year}")
+    def fake_archive(self, dataset, year):
+        calls.append(f"archive:{self._config.paths.processed_dir.name}:{dataset}:{year}")
         return (
-            self._config.paths.processed_dir / "ohlcv" / f"year={year}" / f"ohlcv_{year}.parquet"
+            self._config.paths.processed_dir
+            / dataset
+            / f"year={year}"
+            / f"{dataset}_{year}.parquet"
         )
 
-    monkeypatch.setattr(tushare_source.TushareSource, "archive_daily_ohlcv_year", fake_archive)
+    monkeypatch.setattr(tushare_source.TushareSource, "archive_year", fake_archive)
 
     result = CliRunner().invoke(
         run_etl.app,
@@ -188,8 +191,76 @@ def test_archive_command_calls_archive_function(monkeypatch, tmp_path: Path) -> 
     )
 
     assert result.exit_code == 0
-    assert calls == ["archive:processed:2025"]
+    assert calls == ["archive:processed:daily-ohlcv:2025"]
     assert "归档完成:" in result.output
+
+
+def test_archive_command_supports_adj_factor_and_daily_basic(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    patch_runtime(monkeypatch, run_etl, tmp_path)
+    calls: list[str] = []
+
+    from quant.etl.sources import tushare_source
+
+    def fake_archive(self, dataset, year):
+        calls.append(f"archive:{dataset}:{year}")
+        return (
+            self._config.paths.processed_dir
+            / dataset
+            / f"year={year}"
+            / f"{dataset}_{year}.parquet"
+        )
+
+    monkeypatch.setattr(tushare_source.TushareSource, "archive_year", fake_archive)
+
+    adj_result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "archive",
+            "adj-factor",
+            "--source",
+            "tushare",
+            "--year",
+            "2025",
+        ],
+    )
+    basic_result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "archive",
+            "daily-basic",
+            "--source",
+            "tushare",
+            "--year",
+            "2025",
+        ],
+    )
+
+    assert adj_result.exit_code == 0
+    assert basic_result.exit_code == 0
+    assert calls == ["archive:adj-factor:2025", "archive:daily-basic:2025"]
+
+
+def test_archive_command_rejects_unsupported_tushare_dataset(tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "archive",
+            "trade-calendar",
+            "--source",
+            "tushare",
+            "--year",
+            "2025",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "暂未实现归档: dataset=trade-calendar, source=tushare" in result.output
 
 
 def test_unimplemented_dataset_returns_chinese_error(tmp_path: Path) -> None:

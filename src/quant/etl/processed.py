@@ -166,6 +166,7 @@ def archive_daily_year(
     write_parquet_atomic(year_path, archived_df)
     for month_file in month_files:
         month_file.unlink()
+        _remove_empty_directory(month_file.parent)
     return year_path
 
 
@@ -239,6 +240,14 @@ def write_parquet_atomic(path: Path, df: DataFrame) -> None:
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
+
+
+def _remove_empty_directory(path: Path) -> None:
+    """删除空目录; 非空目录保持不动。"""
+    try:
+        path.rmdir()
+    except OSError:
+        return
 
 
 def _require_columns(df: DataFrame, columns: Sequence[str]) -> None:

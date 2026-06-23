@@ -13,15 +13,14 @@ from quant.data.fields import (
 )
 from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
-from quant.etl.sources import tushare_source
-from quant.etl.sources.tushare_source import (
-    TushareSource,
-    load_trade_calendar,
+from quant.etl.sources import tushare_normalizers, tushare_source
+from quant.etl.sources.tushare_normalizers import (
     normalize_adj_factor_df,
     normalize_daily_basic_df,
     normalize_daily_ohlcv_df,
     normalize_trade_calendar_df,
 )
+from quant.etl.sources.tushare_source import TushareSource
 from quant.utils import build_raw_path
 
 
@@ -650,7 +649,7 @@ def test_normalize_daily_basic_df_logs_and_zeroes_anomaly_fields(monkeypatch) ->
         def error(self, message, *args):
             error_logs.append((message, args))
 
-    monkeypatch.setattr(tushare_source, "logger", FakeLogger())
+    monkeypatch.setattr(tushare_normalizers, "logger", FakeLogger())
 
     normalized = normalize_daily_basic_df(
         make_daily_basic_raw_df(
@@ -721,7 +720,7 @@ def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Pa
         ),
     )
 
-    row_count = load_trade_calendar(config, task)
+    row_count = TushareSource(config).load_trade_calendar(task)
 
     manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
     with manager.session() as conn:

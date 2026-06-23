@@ -204,8 +204,30 @@ def test_archive_daily_year_merges_month_files_and_removes_them(tmp_path: Path) 
     assert output_path == year_path
     assert not january_path.exists()
     assert not february_path.exists()
+    assert not january_path.parent.exists()
+    assert not february_path.parent.exists()
     assert output_df["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
     assert output_df["close"].tolist() == [10.0, 20.0]
+
+
+def test_archive_daily_year_keeps_non_empty_month_directory(tmp_path: Path) -> None:
+    archive_year = date.today().year - 1
+    january_path = build_daily_month_path(tmp_path, "ohlcv", archive_year, 1)
+    keep_path = january_path.parent / "README.txt"
+    write_parquet(january_path, make_daily_df([("000001.SZ", date(archive_year, 1, 2), 10.0)]))
+    keep_path.write_text("保留非归档文件", encoding="utf-8")
+
+    archive_daily_year(
+        tmp_path,
+        "ohlcv",
+        archive_year,
+        key_columns=DAILY_KEYS,
+        columns=DAILY_COLUMNS,
+    )
+
+    assert not january_path.exists()
+    assert january_path.parent.exists()
+    assert keep_path.exists()
 
 
 def test_archive_daily_year_rejects_current_year_and_missing_month_files(tmp_path: Path) -> None:

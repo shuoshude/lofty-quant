@@ -120,10 +120,10 @@ def archive(
     """归档 processed 数据。"""
     config = _setup_runtime(config_dir, environment, log_level)
     try:
-        if source == "tushare" and dataset == "daily-ohlcv":
+        if source == "tushare":
             from quant.etl.sources.tushare_source import TushareSource
 
-            output_path = TushareSource(config).archive_daily_ohlcv_year(year)
+            output_path = TushareSource(config).archive_year(dataset, year)
         else:
             raise NotImplementedError(f"暂未实现归档: dataset={dataset}, source={source}")
     except (FileNotFoundError, NotImplementedError, ValueError) as exc:
