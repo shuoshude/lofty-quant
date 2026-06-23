@@ -116,9 +116,9 @@ def _write_single_raw_frame(config: QuantConfig, task: ETLTask, df: DataFrame) -
 
 def _fetch_tushare_raw(config: QuantConfig, task: ETLTask) -> RawFetchResult:
     """懒加载 Tushare 数据源, 避免 source 与 raw 工具循环导入。"""
-    from quant.etl.sources.tushare_source import TushareClient
+    from quant.etl.sources.tushare_source import TushareSource
 
-    return TushareClient(config).fetch_tushare_raw(task)
+    return TushareSource(config).fetch_raw(task)
 
 
 def _is_daily_raw_file_in_range(path: Path, task: ETLTask) -> bool:

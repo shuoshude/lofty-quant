@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, cast
@@ -40,31 +41,64 @@ TUSHARE_REQUEST_SLEEP_SECONDS = 0.2
 MISSING_TRADE_CALENDAR_MESSAGE = "请先加载交易日历后再拉取日线行情"
 
 
-class TushareClient:
-    """Tushare API 管理。"""
+@dataclass(frozen=True)
+class TushareDailyFetchSpec:
+    """Tushare 日频 raw 拉取编排参数。"""
+
+    dataset: str
+    label: str
+    api_method_name: str
+    raw_columns: Sequence[str]
+    use_fields: bool = False
+
+
+@dataclass(frozen=True)
+class TushareDailyLoadSpec:
+    """Tushare 日频 processed 加载编排参数。"""
+
+    dataset: str
+    label: str
+    processed_dataset: str
+    processed_columns: Sequence[str]
+    normalize_frame: Callable[[DataFrame, ETLTask], DataFrame]
+    missing_raw_message: str
+
+
+TUSHARE_DAILY_FETCH_SPECS: dict[str, TushareDailyFetchSpec] = {
+    "daily-ohlcv": TushareDailyFetchSpec(
+        dataset="daily-ohlcv",
+        label="日线行情",
+        api_method_name="daily",
+        raw_columns=TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
+    ),
+    "adj-factor": TushareDailyFetchSpec(
+        dataset="adj-factor",
+        label="复权因子",
+        api_method_name="adj_factor",
+        raw_columns=TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
+    ),
+    "daily-basic": TushareDailyFetchSpec(
+        dataset="daily-basic",
+        label="每日指标",
+        api_method_name="daily_basic",
+        raw_columns=TUSHARE_DAILY_BASIC_RAW_COLUMNS,
+        use_fields=True,
+    ),
+}
+
+
+class _TushareApiClient:
+    """Tushare API 客户端, 只负责外部接口调用。"""
 
     def __init__(self, config: QuantConfig) -> None:
-        self._config = config
-        self._tushare_token = config.secrets.tushare_token
-        if not self._tushare_token:
+        tushare_token = config.secrets.tushare_token
+        if not tushare_token:
             raise ValueError("请在环境变量中设置 LOFTY_QUANT__SECRETS__TUSHARE_TOKEN")
-        ts.set_token(self._tushare_token)
+        ts.set_token(tushare_token)
         self._pro_api: Any = ts.pro_api()
 
-    def fetch_tushare_raw(self, task: ETLTask) -> DataFrame | Iterator[tuple[date, DataFrame]]:
-        """按数据集拉取 Tushare 原始 DataFrame。"""
-        if task.dataset == "trade-calendar":
-            return self.fetch_trade_calendar(task)
-        if task.dataset == "daily-ohlcv":
-            return self.fetch_daily_ohlcv(task)
-        if task.dataset == "adj-factor":
-            return self.fetch_adj_factor(task)
-        if task.dataset == "daily-basic":
-            return self.fetch_daily_basic(task)
-        raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
-
     def fetch_trade_calendar(self, task: ETLTask) -> DataFrame:
-        """拉取交易日历原始数据。"""
+        """调用 Tushare 交易日历接口。"""
         exchange = task.exchange or ""
         logger.bind(module="etl").info(
             "开始调用 Tushare 交易日历接口: exchange={}, start_date={}, end_date={}",
@@ -82,112 +116,113 @@ class TushareClient:
         logger.bind(module="etl").info("Tushare 交易日历接口返回完成: 行数={}", len(df.index))
         return df
 
+    def fetch_daily_frame(self, trade_date: date, spec: TushareDailyFetchSpec) -> DataFrame:
+        """调用 Tushare 日频接口并返回单个交易日 DataFrame。"""
+        trade_date_text = trade_date.strftime("%Y%m%d")
+        fields = ",".join(spec.raw_columns) if spec.use_fields else None
+        _sleep_before_request()
+        logger.bind(module="etl").info(
+            "开始调用 Tushare {}接口: trade_date={}",
+            spec.label,
+            trade_date_text,
+        )
+        try:
+            api_method = getattr(self._pro_api, spec.api_method_name)
+            if fields is None:
+                result = api_method(trade_date=trade_date_text)
+            else:
+                result = api_method(trade_date=trade_date_text, fields=fields)
+        except Exception:
+            logger.bind(module="etl").exception(
+                "Tushare {}接口调用失败: trade_date={}",
+                spec.label,
+                trade_date_text,
+            )
+            raise
+
+        df = cast(DataFrame, result)
+        logger.bind(module="etl").info(
+            "Tushare {}接口返回完成: trade_date={}, 行数={}",
+            spec.label,
+            trade_date_text,
+            len(df.index),
+        )
+        return df
+
+
+class TushareSource:
+    """Tushare 数据源适配器, 统一承载 fetch/load/archive。"""
+
+    def __init__(self, config: QuantConfig) -> None:
+        self._config = config
+        self._api_client: _TushareApiClient | None = None
+
+    def fetch_raw(self, task: ETLTask) -> DataFrame | Iterator[tuple[date, DataFrame]]:
+        """按数据集拉取 Tushare 原始 DataFrame。"""
+        if task.dataset == "trade-calendar":
+            return self.fetch_trade_calendar(task)
+        if task.dataset == "daily-ohlcv":
+            return self.fetch_daily_ohlcv(task)
+        if task.dataset == "adj-factor":
+            return self.fetch_adj_factor(task)
+        if task.dataset == "daily-basic":
+            return self.fetch_daily_basic(task)
+        raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
+
+    def load_raw(self, task: ETLTask) -> int:
+        """按数据集加载 Tushare raw CSV。"""
+        if task.dataset == "trade-calendar":
+            return load_trade_calendar(self._config, task)
+        if task.dataset == "daily-ohlcv":
+            return load_daily_ohlcv(self._config, task)
+        if task.dataset == "adj-factor":
+            return load_adj_factor(self._config, task)
+        if task.dataset == "daily-basic":
+            return load_daily_basic(self._config, task)
+        raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
+
+    def archive_daily_ohlcv_year(self, year: int) -> Path:
+        """将某个已结束年份的月度日线 Parquet 归档为年文件。"""
+        year_path = archive_daily_year(
+            self._config.paths.processed_dir,
+            "ohlcv",
+            year,
+            key_columns=["ts_code", "trade_date"],
+            columns=DAILY_OHLCV_COLUMNS,
+        )
+        logger.bind(module="etl").info(
+            "日线行情年度归档完成: year={}, 路径={}",
+            year,
+            year_path,
+        )
+        return year_path
+
+    def fetch_trade_calendar(self, task: ETLTask) -> DataFrame:
+        """拉取交易日历原始数据。"""
+        return self._api().fetch_trade_calendar(task)
+
     def fetch_daily_ohlcv(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
         """按本地交易日历逐日拉取 Tushare 日线行情原始数据。"""
-        trade_dates = _load_open_trade_dates(self._config, task)
-        logger.bind(module="etl").info(
-            "开始拉取 Tushare 日线行情: exchange={}, 开市日数量={}",
-            task.exchange or "SSE",
-            len(trade_dates),
-        )
-
-        for trade_date in trade_dates:
-            trade_date_text = trade_date.strftime("%Y%m%d")
-            if _should_skip_existing_daily_raw(self._config, task, trade_date):
-                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_OHLCV_RAW_COLUMNS)
-                continue
-
-            _sleep_before_request()
-            logger.bind(module="etl").info(
-                "开始调用 Tushare 日线行情接口: trade_date={}",
-                trade_date_text,
-            )
-            try:
-                result = self._pro_api.daily(trade_date=trade_date_text)
-            except Exception:
-                logger.bind(module="etl").exception(
-                    "Tushare 日线行情接口调用失败: trade_date={}",
-                    trade_date_text,
-                )
-                raise
-
-            df = cast(DataFrame, result)
-            logger.bind(module="etl").info(
-                "Tushare 日线行情接口返回完成: trade_date={}, 行数={}",
-                trade_date_text,
-                len(df.index),
-            )
-            if df.empty:
-                logger.bind(module="etl").info(
-                    "Tushare 日线行情返回为空, 写出空 raw CSV 表头: trade_date={}",
-                    trade_date_text,
-                )
-                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_OHLCV_RAW_COLUMNS)
-                continue
-
-            yield trade_date, df
-
-        logger.bind(module="etl").info(
-            "Tushare 日线行情按日拉取完成: 交易日数量={}",
-            len(trade_dates),
-        )
+        return self._fetch_daily_dataset(task, TUSHARE_DAILY_FETCH_SPECS["daily-ohlcv"])
 
     def fetch_adj_factor(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
         """按本地交易日历逐日拉取 Tushare 复权因子原始数据。"""
-        trade_dates = _load_open_trade_dates(self._config, task)
-        logger.bind(module="etl").info(
-            "开始拉取 Tushare 复权因子: exchange={}, 开市日数量={}",
-            task.exchange or "SSE",
-            len(trade_dates),
-        )
-
-        for trade_date in trade_dates:
-            trade_date_text = trade_date.strftime("%Y%m%d")
-            if _should_skip_existing_daily_raw(self._config, task, trade_date):
-                yield trade_date, pd.DataFrame(columns=TUSHARE_ADJ_FACTOR_RAW_COLUMNS)
-                continue
-
-            _sleep_before_request()
-            logger.bind(module="etl").info(
-                "开始调用 Tushare 复权因子接口: trade_date={}",
-                trade_date_text,
-            )
-            try:
-                result = self._pro_api.adj_factor(trade_date=trade_date_text)
-            except Exception:
-                logger.bind(module="etl").exception(
-                    "Tushare 复权因子接口调用失败: trade_date={}",
-                    trade_date_text,
-                )
-                raise
-
-            df = cast(DataFrame, result)
-            logger.bind(module="etl").info(
-                "Tushare 复权因子接口返回完成: trade_date={}, 行数={}",
-                trade_date_text,
-                len(df.index),
-            )
-            if df.empty:
-                logger.bind(module="etl").info(
-                    "Tushare 复权因子返回为空, 写出空 raw CSV 表头: trade_date={}",
-                    trade_date_text,
-                )
-                yield trade_date, pd.DataFrame(columns=TUSHARE_ADJ_FACTOR_RAW_COLUMNS)
-                continue
-
-            yield trade_date, df
-
-        logger.bind(module="etl").info(
-            "Tushare 复权因子按日拉取完成: 交易日数量={}",
-            len(trade_dates),
-        )
+        return self._fetch_daily_dataset(task, TUSHARE_DAILY_FETCH_SPECS["adj-factor"])
 
     def fetch_daily_basic(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
         """按本地交易日历逐日拉取 Tushare 每日指标原始数据。"""
+        return self._fetch_daily_dataset(task, TUSHARE_DAILY_FETCH_SPECS["daily-basic"])
+
+    def _fetch_daily_dataset(
+        self,
+        task: ETLTask,
+        spec: TushareDailyFetchSpec,
+    ) -> Iterator[tuple[date, DataFrame]]:
+        """按本地交易日历逐日拉取 Tushare 日频 raw 数据。"""
         trade_dates = _load_open_trade_dates(self._config, task)
-        fields = ",".join(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
         logger.bind(module="etl").info(
-            "开始拉取 Tushare 每日指标: exchange={}, 开市日数量={}",
+            "开始拉取 Tushare {}: exchange={}, 开市日数量={}",
+            spec.label,
             task.exchange or "SSE",
             len(trade_dates),
         )
@@ -195,56 +230,32 @@ class TushareClient:
         for trade_date in trade_dates:
             trade_date_text = trade_date.strftime("%Y%m%d")
             if _should_skip_existing_daily_raw(self._config, task, trade_date):
-                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+                yield trade_date, pd.DataFrame(columns=list(spec.raw_columns))
                 continue
 
-            _sleep_before_request()
-            logger.bind(module="etl").info(
-                "开始调用 Tushare 每日指标接口: trade_date={}",
-                trade_date_text,
-            )
-            try:
-                result = self._pro_api.daily_basic(trade_date=trade_date_text, fields=fields)
-            except Exception:
-                logger.bind(module="etl").exception(
-                    "Tushare 每日指标接口调用失败: trade_date={}",
-                    trade_date_text,
-                )
-                raise
-
-            df = cast(DataFrame, result)
-            logger.bind(module="etl").info(
-                "Tushare 每日指标接口返回完成: trade_date={}, 行数={}",
-                trade_date_text,
-                len(df.index),
-            )
+            df = self._api().fetch_daily_frame(trade_date, spec)
             if df.empty:
                 logger.bind(module="etl").info(
-                    "Tushare 每日指标返回为空, 写出空 raw CSV 表头: trade_date={}",
+                    "Tushare {}返回为空, 写出空 raw CSV 表头: trade_date={}",
+                    spec.label,
                     trade_date_text,
                 )
-                yield trade_date, pd.DataFrame(columns=TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+                yield trade_date, pd.DataFrame(columns=list(spec.raw_columns))
                 continue
 
             yield trade_date, df
 
         logger.bind(module="etl").info(
-            "Tushare 每日指标按日拉取完成: 交易日数量={}",
+            "Tushare {}按日拉取完成: 交易日数量={}",
+            spec.label,
             len(trade_dates),
         )
 
-
-def load_tushare_data(config: QuantConfig, task: ETLTask) -> int:
-    """按数据集加载 Tushare raw CSV。"""
-    if task.dataset == "trade-calendar":
-        return load_trade_calendar(config, task)
-    if task.dataset == "daily-ohlcv":
-        return load_daily_ohlcv(config, task)
-    if task.dataset == "adj-factor":
-        return load_adj_factor(config, task)
-    if task.dataset == "daily-basic":
-        return load_daily_basic(config, task)
-    raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
+    def _api(self) -> _TushareApiClient:
+        """懒加载 Tushare API 客户端, 避免离线 load/archive 依赖 token。"""
+        if self._api_client is None:
+            self._api_client = _TushareApiClient(self._config)
+        return self._api_client
 
 
 def load_trade_calendar(config: QuantConfig, task: ETLTask) -> int:
@@ -289,100 +300,79 @@ def load_trade_calendar(config: QuantConfig, task: ETLTask) -> int:
 
 def load_daily_ohlcv(config: QuantConfig, task: ETLTask) -> int:
     """读取 Tushare 日线 raw CSV, 标准化后写入月度 processed Parquet。"""
-    raw_files = find_raw_files(config.paths.raw_dir, task)
-    if not raw_files:
-        raise FileNotFoundError("未找到日线行情 raw CSV 文件")
-
-    result = load_daily_raw_csv_to_monthly_parquet(
-        raw_files,
-        config.paths.processed_dir,
-        "ohlcv",
-        read_frame=read_raw_csv,
-        normalize_frame=lambda raw_df: normalize_daily_ohlcv_df(raw_df, task),
-        date_column="trade_date",
-        key_columns=["ts_code", "trade_date"],
-        columns=DAILY_OHLCV_COLUMNS,
-        dry_run=task.dry_run,
-    )
-    for output_path, written_count in sorted(result.written_paths.items()):
-        logger.bind(module="etl").info(
-            "日线行情 processed 月文件写入完成: 路径={}, 新增行数={}",
-            output_path,
-            written_count,
-        )
-
-    return result.row_count
+    return _load_daily_dataset(config, task, _daily_load_specs()["daily-ohlcv"])
 
 
 def load_adj_factor(config: QuantConfig, task: ETLTask) -> int:
     """读取 Tushare 复权因子 raw CSV, 标准化后写入月度 processed Parquet。"""
-    raw_files = find_raw_files(config.paths.raw_dir, task)
-    if not raw_files:
-        raise FileNotFoundError("未找到复权因子 raw CSV 文件")
-
-    result = load_daily_raw_csv_to_monthly_parquet(
-        raw_files,
-        config.paths.processed_dir,
-        "adj_factor",
-        read_frame=read_raw_csv,
-        normalize_frame=lambda raw_df: normalize_adj_factor_df(raw_df, task),
-        date_column="trade_date",
-        key_columns=["ts_code", "trade_date"],
-        columns=ADJ_FACTOR_COLUMNS,
-        dry_run=task.dry_run,
-    )
-    for output_path, written_count in sorted(result.written_paths.items()):
-        logger.bind(module="etl").info(
-            "复权因子 processed 月文件写入完成: 路径={}, 新增行数={}",
-            output_path,
-            written_count,
-        )
-
-    return result.row_count
+    return _load_daily_dataset(config, task, _daily_load_specs()["adj-factor"])
 
 
 def load_daily_basic(config: QuantConfig, task: ETLTask) -> int:
     """读取 Tushare 每日指标 raw CSV, 标准化后写入月度 processed Parquet。"""
+    return _load_daily_dataset(config, task, _daily_load_specs()["daily-basic"])
+
+
+def _daily_load_specs() -> dict[str, TushareDailyLoadSpec]:
+    """返回 Tushare 日频 processed 加载配置。"""
+    return {
+        "daily-ohlcv": TushareDailyLoadSpec(
+            dataset="daily-ohlcv",
+            label="日线行情",
+            processed_dataset="ohlcv",
+            processed_columns=DAILY_OHLCV_COLUMNS,
+            normalize_frame=normalize_daily_ohlcv_df,
+            missing_raw_message="未找到日线行情 raw CSV 文件",
+        ),
+        "adj-factor": TushareDailyLoadSpec(
+            dataset="adj-factor",
+            label="复权因子",
+            processed_dataset="adj_factor",
+            processed_columns=ADJ_FACTOR_COLUMNS,
+            normalize_frame=normalize_adj_factor_df,
+            missing_raw_message="未找到复权因子 raw CSV 文件",
+        ),
+        "daily-basic": TushareDailyLoadSpec(
+            dataset="daily-basic",
+            label="每日指标",
+            processed_dataset="daily_basic",
+            processed_columns=DAILY_BASIC_COLUMNS,
+            normalize_frame=normalize_daily_basic_df,
+            missing_raw_message="未找到每日指标 raw CSV 文件",
+        ),
+    }
+
+
+def _load_daily_dataset(
+    config: QuantConfig,
+    task: ETLTask,
+    spec: TushareDailyLoadSpec,
+) -> int:
+    """读取日频 raw CSV, 标准化后写入月度 processed Parquet。"""
     raw_files = find_raw_files(config.paths.raw_dir, task)
     if not raw_files:
-        raise FileNotFoundError("未找到每日指标 raw CSV 文件")
+        raise FileNotFoundError(spec.missing_raw_message)
 
     result = load_daily_raw_csv_to_monthly_parquet(
         raw_files,
         config.paths.processed_dir,
-        "daily_basic",
+        spec.processed_dataset,
         read_frame=read_raw_csv,
-        normalize_frame=lambda raw_df: normalize_daily_basic_df(raw_df, task),
+        normalize_frame=lambda raw_df: spec.normalize_frame(raw_df, task),
         date_column="trade_date",
         key_columns=["ts_code", "trade_date"],
-        columns=DAILY_BASIC_COLUMNS,
+        columns=spec.processed_columns,
         dry_run=task.dry_run,
     )
     for output_path, written_count in sorted(result.written_paths.items()):
         logger.bind(module="etl").info(
-            "每日指标 processed 月文件写入完成: 路径={}, 新增行数={}",
+            "{} processed 月文件写入完成: 路径={}, 新增行数={}",
+            spec.label,
             output_path,
             written_count,
         )
 
     return result.row_count
-
-
-def archive_daily_ohlcv_year(config: QuantConfig, year: int) -> Path:
-    """将某个已结束年份的月度日线 Parquet 归档为年文件。"""
-    year_path = archive_daily_year(
-        config.paths.processed_dir,
-        "ohlcv",
-        year,
-        key_columns=["ts_code", "trade_date"],
-        columns=DAILY_OHLCV_COLUMNS,
-    )
-    logger.bind(module="etl").info(
-        "日线行情年度归档完成: year={}, 路径={}",
-        year,
-        year_path,
-    )
-    return year_path
 
 
 def normalize_trade_calendar_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:

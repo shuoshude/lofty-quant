@@ -9,7 +9,7 @@ from quant.data.db import DuckDBManager
 from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
 from quant.etl.load import load_raw_data
-from quant.etl.sources.tushare_source import archive_daily_ohlcv_year
+from quant.etl.sources.tushare_source import TushareSource
 from quant.etl.storage import replace_duckdb_dataframe, replace_table_dataframe
 from quant.utils import build_raw_path
 
@@ -475,7 +475,7 @@ def test_archive_daily_ohlcv_year_merges_month_files_and_removes_them(tmp_path: 
     write_processed_daily(february_path, archive_year, 2, "000002.SZ", 20.0)
     write_processed_daily(year_path, archive_year, 1, "000001.SZ", 8.0)
 
-    output_path = archive_daily_ohlcv_year(config, archive_year)
+    output_path = TushareSource(config).archive_daily_ohlcv_year(archive_year)
     df = pd.read_parquet(output_path).sort_values("ts_code").reset_index(drop=True)
 
     assert output_path == year_path
@@ -489,10 +489,10 @@ def test_archive_daily_ohlcv_year_rejects_current_year_and_missing_files(tmp_pat
     config = make_config(tmp_path)
 
     with pytest.raises(ValueError, match="只能归档已结束年份"):
-        archive_daily_ohlcv_year(config, date.today().year)
+        TushareSource(config).archive_daily_ohlcv_year(date.today().year)
 
     with pytest.raises(FileNotFoundError, match="未找到可归档的月度日频文件"):
-        archive_daily_ohlcv_year(config, date.today().year - 1)
+        TushareSource(config).archive_daily_ohlcv_year(date.today().year - 1)
 
 
 def test_load_raw_data_rejects_unknown_source(tmp_path: Path) -> None:

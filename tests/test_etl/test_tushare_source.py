@@ -15,7 +15,7 @@ from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
 from quant.etl.sources import tushare_source
 from quant.etl.sources.tushare_source import (
-    TushareClient,
+    TushareSource,
     load_trade_calendar,
     normalize_adj_factor_df,
     normalize_daily_basic_df,
@@ -52,7 +52,7 @@ def test_tushare_source_returns_dataframe(monkeypatch, tmp_path: Path) -> None:
         exchange="SSE",
     )
 
-    df = TushareClient(make_config(tmp_path, token="test-token")).fetch_tushare_raw(task)
+    df = TushareSource(make_config(tmp_path, token="test-token")).fetch_raw(task)
 
     assert calls == {
         "token": "test-token",
@@ -114,7 +114,7 @@ def test_tushare_source_fetches_daily_ohlcv_from_open_trade_dates(
         exchange="SSE",
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_daily_ohlcv(task))
+    frames_by_date = dict(TushareSource(config).fetch_daily_ohlcv(task))
 
     assert daily_calls == ["20240102", "20240104"]
     assert sleep_calls == ["sleep", "sleep"]
@@ -146,7 +146,7 @@ def test_tushare_source_daily_ohlcv_returns_empty_columns(
         exchange="SSE",
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_daily_ohlcv(task))
+    frames_by_date = dict(TushareSource(config).fetch_daily_ohlcv(task))
 
     df = frames_by_date[date(2024, 1, 2)]
     assert df.empty
@@ -192,7 +192,7 @@ def test_tushare_source_fetches_adj_factor_from_open_trade_dates(
         exchange="SSE",
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_adj_factor(task))
+    frames_by_date = dict(TushareSource(config).fetch_adj_factor(task))
 
     assert adj_factor_calls == ["20240102", "20240104"]
     assert sleep_calls == ["sleep", "sleep"]
@@ -231,7 +231,7 @@ def test_tushare_source_skips_existing_adj_factor_raw_before_request(
         lambda: sleep_calls.append("sleep"),
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_adj_factor(task))
+    frames_by_date = dict(TushareSource(config).fetch_adj_factor(task))
 
     assert sleep_calls == []
     assert list(frames_by_date) == [date(2024, 1, 2)]
@@ -261,7 +261,7 @@ def test_tushare_source_adj_factor_returns_empty_columns(
         exchange="SSE",
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_adj_factor(task))
+    frames_by_date = dict(TushareSource(config).fetch_adj_factor(task))
 
     df = frames_by_date[date(2024, 1, 2)]
     assert df.empty
@@ -314,7 +314,7 @@ def test_tushare_source_fetches_daily_basic_from_open_trade_dates(
         exchange="SSE",
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_daily_basic(task))
+    frames_by_date = dict(TushareSource(config).fetch_daily_basic(task))
 
     expected_fields = ",".join(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
     assert daily_basic_calls == [("20240102", expected_fields), ("20240104", expected_fields)]
@@ -356,7 +356,7 @@ def test_tushare_source_skips_existing_daily_basic_raw_before_request(
         lambda: sleep_calls.append("sleep"),
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_daily_basic(task))
+    frames_by_date = dict(TushareSource(config).fetch_daily_basic(task))
 
     assert sleep_calls == []
     assert list(frames_by_date) == [date(2024, 1, 2)]
@@ -386,7 +386,7 @@ def test_tushare_source_daily_basic_returns_empty_columns(
         exchange="SSE",
     )
 
-    frames_by_date = dict(TushareClient(config).fetch_daily_basic(task))
+    frames_by_date = dict(TushareSource(config).fetch_daily_basic(task))
 
     df = frames_by_date[date(2024, 1, 2)]
     assert df.empty
@@ -413,12 +413,49 @@ def test_tushare_source_daily_ohlcv_requires_trade_calendar(
     )
 
     with pytest.raises(ValueError, match="请先加载交易日历后再拉取日线行情"):
-        list(TushareClient(make_config(tmp_path, token="test-token")).fetch_daily_ohlcv(task))
+        list(TushareSource(make_config(tmp_path, token="test-token")).fetch_daily_ohlcv(task))
 
 
 def test_tushare_source_requires_token(tmp_path: Path) -> None:
+    task = ETLTask(
+        dataset="trade-calendar",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 31),
+        exchange="SSE",
+    )
+
     with pytest.raises(ValueError, match="请在环境变量中设置 LOFTY_QUANT__SECRETS__TUSHARE_TOKEN"):
-        TushareClient(make_config(tmp_path, token=None))
+        TushareSource(make_config(tmp_path, token=None)).fetch_trade_calendar(task)
+
+
+def test_tushare_source_load_raw_does_not_require_token(tmp_path: Path) -> None:
+    config = make_config(tmp_path, token=None)
+    task = ETLTask(
+        dataset="trade-calendar",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 31),
+        exchange="SSE",
+    )
+    raw_path = build_raw_path(config.paths.raw_dir, task)
+    write_raw_csv(
+        raw_path,
+        pd.DataFrame(
+            [
+                {
+                    "exchange": "SSE",
+                    "cal_date": "20240102",
+                    "is_open": 1,
+                    "pretrade_date": "20231229",
+                }
+            ]
+        ),
+    )
+
+    row_count = TushareSource(config).load_raw(task)
+
+    assert row_count == 1
 
 
 def test_normalize_trade_calendar_df_vectorizes_raw_dataframe() -> None:

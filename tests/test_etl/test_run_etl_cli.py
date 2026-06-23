@@ -167,11 +167,13 @@ def test_archive_command_calls_archive_function(monkeypatch, tmp_path: Path) -> 
 
     from quant.etl.sources import tushare_source
 
-    def fake_archive(config, year):
-        calls.append(f"archive:{config.paths.processed_dir.name}:{year}")
-        return config.paths.processed_dir / "ohlcv" / f"year={year}" / f"ohlcv_{year}.parquet"
+    def fake_archive(self, year):
+        calls.append(f"archive:{self._config.paths.processed_dir.name}:{year}")
+        return (
+            self._config.paths.processed_dir / "ohlcv" / f"year={year}" / f"ohlcv_{year}.parquet"
+        )
 
-    monkeypatch.setattr(tushare_source, "archive_daily_ohlcv_year", fake_archive)
+    monkeypatch.setattr(tushare_source.TushareSource, "archive_daily_ohlcv_year", fake_archive)
 
     result = CliRunner().invoke(
         run_etl.app,
