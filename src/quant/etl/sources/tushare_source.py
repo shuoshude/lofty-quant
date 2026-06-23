@@ -48,9 +48,7 @@ class TushareDailyFetchSpec:
 
     dataset: str
     label: str
-    api_method_name: str
     raw_columns: Sequence[str]
-    use_fields: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,21 +67,17 @@ TUSHARE_DAILY_FETCH_SPECS: dict[str, TushareDailyFetchSpec] = {
     "daily-ohlcv": TushareDailyFetchSpec(
         dataset="daily-ohlcv",
         label="日线行情",
-        api_method_name="daily",
         raw_columns=TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
     ),
     "adj-factor": TushareDailyFetchSpec(
         dataset="adj-factor",
         label="复权因子",
-        api_method_name="adj_factor",
         raw_columns=TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
     ),
     "daily-basic": TushareDailyFetchSpec(
         dataset="daily-basic",
         label="每日指标",
-        api_method_name="daily_basic",
         raw_columns=TUSHARE_DAILY_BASIC_RAW_COLUMNS,
-        use_fields=True,
     ),
 }
 
@@ -148,7 +142,6 @@ class _TushareApiClient:
     def fetch_daily_frame(self, trade_date: date, spec: TushareDailyFetchSpec) -> DataFrame:
         """调用 Tushare 日频接口并返回单个交易日 DataFrame。"""
         trade_date_text = trade_date.strftime("%Y%m%d")
-        fields = ",".join(spec.raw_columns) if spec.use_fields else None
         _sleep_before_request()
         logger.bind(module="etl").info(
             "开始调用 Tushare {}接口: trade_date={}",
@@ -156,11 +149,19 @@ class _TushareApiClient:
             trade_date_text,
         )
         try:
-            api_method = getattr(self._pro_api, spec.api_method_name)
-            if fields is None:
-                result = api_method(trade_date=trade_date_text)
+            if spec.dataset == "daily-ohlcv":
+                result = self._pro_api.daily(trade_date=trade_date_text)
+            elif spec.dataset == "adj-factor":
+                result = self._pro_api.adj_factor(trade_date=trade_date_text)
+            elif spec.dataset == "daily-basic":
+                result = self._pro_api.daily_basic(
+                    trade_date=trade_date_text,
+                    fields=",".join(spec.raw_columns),
+                )
             else:
-                result = api_method(trade_date=trade_date_text, fields=fields)
+                raise NotImplementedError(
+                    f"暂未实现 Tushare 日频接口: dataset={spec.dataset}"
+                )
         except Exception:
             logger.bind(module="etl").exception(
                 "Tushare {}接口调用失败: trade_date={}",
