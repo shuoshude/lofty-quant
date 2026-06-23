@@ -20,6 +20,9 @@ config/settings.local.toml
 data/**
 !data/**/
 !data/**/.gitkeep
+notebooks/data_exploration/
+
 # Runtime logs
 log/
 .vscode/
+

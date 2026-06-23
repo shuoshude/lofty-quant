@@ -36,7 +36,11 @@ def test_setup_logger_writes_etl_records_to_dedicated_log(tmp_path: Path) -> Non
     logger.bind(module="etl").info("ETL 日志测试")
     logger.complete()
 
-    etl_log_files = list((tmp_path / "runtime-logs").glob("etl_*.log"))
+    etl_log_files = [
+        path
+        for path in (tmp_path / "runtime-logs").glob("etl_*.log")
+        if not path.name.startswith("etl_error_")
+    ]
 
     assert len(etl_log_files) == 1
     content = etl_log_files[0].read_text(encoding="utf-8")
@@ -44,6 +48,36 @@ def test_setup_logger_writes_etl_records_to_dedicated_log(tmp_path: Path) -> Non
     assert "test_setup_logger_writes_etl_records_to_dedicated_log" in content
     assert "ETL 日志测试" in content
     assert "通用日志测试" not in content
+
+
+def test_setup_logger_writes_etl_errors_to_separate_log(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    write_settings(config_dir / "settings.toml", tmp_path / "runtime-logs")
+    config = load_config(config_dir=config_dir)
+
+    setup_logger(config=config, enable_console=False)
+    logger.bind(module="etl").info("ETL 普通日志")
+    logger.bind(module="etl").error("ETL 异常日志")
+    logger.complete()
+
+    etl_log_files = [
+        path
+        for path in (tmp_path / "runtime-logs").glob("etl_*.log")
+        if not path.name.startswith("etl_error_")
+    ]
+    etl_error_log_files = list((tmp_path / "runtime-logs").glob("etl_error_*.log"))
+
+    assert len(etl_log_files) == 1
+    assert len(etl_error_log_files) == 1
+
+    etl_content = etl_log_files[0].read_text(encoding="utf-8")
+    etl_error_content = etl_error_log_files[0].read_text(encoding="utf-8")
+
+    assert "ETL 普通日志" in etl_content
+    assert "ETL 异常日志" not in etl_content
+    assert "ERROR" in etl_error_content
+    assert "ETL 异常日志" in etl_error_content
 
 
 def test_log_format_includes_timestamp_level_location_and_message() -> None:

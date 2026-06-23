@@ -109,7 +109,7 @@ setup_logger()
 logger.info("系统启动")
 ```
 
-如需写入模块专用日志,用 Loguru 的 `bind()` 绑定结构化字段。当前 `module="etl"` 会额外写入 ETL 专用日志文件:
+如需写入模块专用日志,用 Loguru 的 `bind()` 绑定结构化字段。当前 `module="etl"` 会额外写入 ETL 专用日志文件,其中 ERROR 及以上级别会单独写入错误日志:
 
 ```python
 etl_logger = logger.bind(module="etl")
@@ -120,7 +120,8 @@ etl_logger.info("ETL 任务启动")
 
 - 默认保存到配置中的 `log_dir`(默认 `log/`)
 - 通用日志文件:`lofty-quant_YYYY-MM-DD.log`
-- ETL 专用文件:`etl_YYYY-MM-DD.log`
+- ETL 普通日志文件:`etl_YYYY-MM-DD.log`
+- ETL 错误日志文件:`etl_error_YYYY-MM-DD.log`
 - 单文件超过 10MB 自动分块
 - 日志格式包含时间戳、日志级别、模块/函数/行号和消息
 
@@ -395,7 +396,7 @@ data/processed/daily_basic/year=2024/month=01/daily_basic_202401.parquet
 
 processed 标准字段对齐 Tushare `daily_basic` 官方文档,包括 `close`, `turnover_rate`, `turnover_rate_f`, `volume_ratio`, `pe`, `pe_ttm`, `pb`, `ps`, `ps_ttm`, `dv_ratio`, `dv_ttm`, `total_share`, `float_share`, `free_share`, `total_mv`, `circ_mv`。其中股本单位为万股,市值单位为万元。
 
-raw 层保留 Tushare 原始返回;load 到 processed 时会做项目语义归一化:`pe` 和 `pe_ttm` 空值表示亏损,入库为 `-1`;`volume_ratio` 空值或负标记表示上市不足五日导致量比为空,入库为 `0`;`dv_ratio` 和 `dv_ttm` 空值或负标记表示未发生派息或股息率为 0,入库为 `0`。
+raw 层保留 Tushare 原始返回;load 到 processed 时会做项目语义归一化:`pe` 和 `pe_ttm` 空值表示亏损,入库为 `-1`;`volume_ratio` 空值或负标记表示上市不足五日导致量比为空,入库为 `0`;`dv_ratio` 和 `dv_ttm` 空值或负标记表示未发生派息或股息率为 0,入库为 `0`。`turnover_rate`, `turnover_rate_f`, `total_share`, `free_share`, `float_share`, `total_mv`, `circ_mv` 为空、为 0 或为负数时视为原始数据异常,load 时入库为 `0`,并记录 error 日志用于后续排查。
 
 ### 数据状态查询
 

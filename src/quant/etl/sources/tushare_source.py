@@ -484,6 +484,7 @@ def normalize_daily_basic_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
         output[field_name] = output[field_name].fillna(-1.0)
     for field_name in ("volume_ratio", "dv_ratio", "dv_ttm"):
         output[field_name] = output[field_name].fillna(0.0).mask(output[field_name] < 0, 0.0)
+    _normalize_daily_basic_anomaly_fields(output)
 
     return _validate_daily_basic_contract(output.loc[:, list(DAILY_BASIC_COLUMNS)])
 
@@ -579,6 +580,36 @@ def _format_daily_basic_validation_error(row: dict[str, Any], exc: ValidationErr
         f"trade_date={row.get('trade_date', '-')}, "
         f"错误={', '.join(error_messages)}"
     )
+
+
+def _normalize_daily_basic_anomaly_fields(df: DataFrame) -> None:
+    """归一化每日指标中的异常指标字段, 并记录错误日志。"""
+    for field_name in (
+        "turnover_rate",
+        "turnover_rate_f",
+        "total_share",
+        "free_share",
+        "float_share",
+        "total_mv",
+        "circ_mv",
+    ):
+        anomaly_mask = df[field_name].isna() | df[field_name].le(0)
+        if not anomaly_mask.any():
+            continue
+
+        sample_rows = (
+            df.loc[anomaly_mask, ["ts_code", "trade_date", field_name]]
+            .head(3)
+            .to_dict(orient="records")
+        )
+        logger.bind(module="etl").error(
+            "每日指标 raw 存在异常指标字段, 已在 processed 入库时置为 0: "
+            "字段={}, 异常行数={}, 样例={}",
+            field_name,
+            int(anomaly_mask.sum()),
+            sample_rows,
+        )
+        df.loc[anomaly_mask, field_name] = 0.0
 
 
 def _require_columns(df: DataFrame, columns: Sequence[str]) -> None:

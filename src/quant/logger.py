@@ -13,6 +13,7 @@ from .utils import resolve_log_dir
 
 LOG_FILE_SIZE_BYTES = 10 * 1024 * 1024
 LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}"
+ERROR_LEVEL_NO = logger.level("ERROR").no
 
 
 def setup_logger(
@@ -45,6 +46,19 @@ def setup_logger(
     logger.add(
         log_dir / "etl_{time:YYYY-MM-DD}.log",
         level="INFO",
+        format=LOG_FORMAT,
+        rotation=LOG_FILE_SIZE_BYTES,
+        filter=lambda record: (
+            record["extra"].get("module") == "etl" and record["level"].no < ERROR_LEVEL_NO
+        ),
+        encoding="utf-8",
+        enqueue=True,
+        backtrace=False,
+        diagnose=False,
+    )
+    logger.add(
+        log_dir / "etl_error_{time:YYYY-MM-DD}.log",
+        level="ERROR",
         format=LOG_FORMAT,
         rotation=LOG_FILE_SIZE_BYTES,
         filter=lambda record: record["extra"].get("module") == "etl",

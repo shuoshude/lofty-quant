@@ -395,6 +395,35 @@ def test_load_daily_basic_normalizes_special_markers(tmp_path: Path) -> None:
     assert df["dv_ttm"].tolist() == [0.0]
 
 
+def test_load_daily_basic_zeroes_anomaly_fields(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_daily_basic_raw(
+        config,
+        date(2024, 1, 2),
+        turnover_rate="-1.0",
+        turnover_rate_f="0",
+        total_share="",
+        free_share="-1.0",
+        float_share="0",
+        total_mv="-10.0",
+        circ_mv="0",
+    )
+
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(daily_basic_month_path(config, 2024, 1))
+
+    assert row_count == 1
+    assert df["turnover_rate"].tolist() == [0.0]
+    assert df["turnover_rate_f"].tolist() == [0.0]
+    assert df["total_share"].tolist() == [0.0]
+    assert df["free_share"].tolist() == [0.0]
+    assert df["float_share"].tolist() == [0.0]
+    assert df["total_mv"].tolist() == [0.0]
+    assert df["circ_mv"].tolist() == [0.0]
+
+
 def test_load_daily_basic_rejects_missing_raw_and_invalid_rows(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
@@ -419,10 +448,6 @@ def test_load_daily_basic_rejects_missing_raw_and_invalid_rows(tmp_path: Path) -
 
     write_daily_basic_raw(config, date(2024, 1, 2), close="bad")
     with pytest.raises(ValueError, match="数值字段 close 格式无效"):
-        load_raw_data(config, task)
-
-    write_daily_basic_raw(config, date(2024, 1, 2), turnover_rate="-1.0")
-    with pytest.raises(ValueError, match=r"每日指标数据契约校验失败.*turnover_rate"):
         load_raw_data(config, task)
 
 
@@ -589,11 +614,17 @@ def write_daily_basic_raw(
     trade_date: str | None = None,
     close: str = "10.2",
     turnover_rate: str = "1.5",
+    turnover_rate_f: str = "2.5",
     volume_ratio: str = "1.2",
     pe: str = "10.0",
     pe_ttm: str = "11.0",
     dv_ratio: str = "0.5",
     dv_ttm: str = "0.6",
+    total_share: str = "100000.0",
+    float_share: str = "80000.0",
+    free_share: str = "60000.0",
+    total_mv: str = "1000000.0",
+    circ_mv: str = "800000.0",
 ) -> None:
     task = daily_basic_task(raw_date, raw_date)
     raw_path = build_raw_path(config.paths.raw_dir, task)
@@ -606,7 +637,7 @@ def write_daily_basic_raw(
                     "trade_date": trade_date or raw_date.strftime("%Y%m%d"),
                     "close": close,
                     "turnover_rate": turnover_rate,
-                    "turnover_rate_f": "2.5",
+                    "turnover_rate_f": turnover_rate_f,
                     "volume_ratio": volume_ratio,
                     "pe": pe,
                     "pe_ttm": pe_ttm,
@@ -615,11 +646,11 @@ def write_daily_basic_raw(
                     "ps_ttm": "2.1",
                     "dv_ratio": dv_ratio,
                     "dv_ttm": dv_ttm,
-                    "total_share": "100000.0",
-                    "float_share": "80000.0",
-                    "free_share": "60000.0",
-                    "total_mv": "1000000.0",
-                    "circ_mv": "800000.0",
+                    "total_share": total_share,
+                    "float_share": float_share,
+                    "free_share": free_share,
+                    "total_mv": total_mv,
+                    "circ_mv": circ_mv,
                 }
             ]
         ),

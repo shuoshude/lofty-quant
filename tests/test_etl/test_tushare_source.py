@@ -603,6 +603,43 @@ def test_normalize_daily_basic_df_normalizes_special_markers() -> None:
     assert loss_row["dv_ttm"] == 0.0
 
 
+def test_normalize_daily_basic_df_logs_and_zeroes_anomaly_fields(monkeypatch) -> None:
+    error_logs: list[tuple[str, tuple[object, ...]]] = []
+
+    class FakeLogger:
+        def bind(self, **_kwargs):
+            return self
+
+        def error(self, message, *args):
+            error_logs.append((message, args))
+
+    monkeypatch.setattr(tushare_source, "logger", FakeLogger())
+
+    normalized = normalize_daily_basic_df(
+        make_daily_basic_raw_df(
+            turnover_rate="-1",
+            turnover_rate_f="0",
+            total_share="",
+            free_share="-1",
+            float_share="0",
+            total_mv="-10",
+            circ_mv="0",
+        ),
+        make_daily_basic_task(),
+    )
+
+    row = normalized.iloc[0].to_dict()
+    assert row["turnover_rate"] == 0.0
+    assert row["turnover_rate_f"] == 0.0
+    assert row["total_share"] == 0.0
+    assert row["free_share"] == 0.0
+    assert row["float_share"] == 0.0
+    assert row["total_mv"] == 0.0
+    assert row["circ_mv"] == 0.0
+    assert len(error_logs) == 7
+    assert all("每日指标 raw 存在异常指标字段" in message for message, _args in error_logs)
+
+
 def test_normalize_daily_basic_df_rejects_invalid_rows() -> None:
     with pytest.raises(ValueError, match="每日指标 raw 缺少字段"):
         normalize_daily_basic_df(pd.DataFrame([{"ts_code": "000001.SZ"}]), make_daily_basic_task())
@@ -621,12 +658,6 @@ def test_normalize_daily_basic_df_rejects_invalid_rows() -> None:
 
     with pytest.raises(ValueError, match="数值字段 close 格式无效"):
         normalize_daily_basic_df(make_daily_basic_raw_df(close="bad"), make_daily_basic_task())
-
-    with pytest.raises(ValueError, match=r"每日指标数据契约校验失败.*turnover_rate"):
-        normalize_daily_basic_df(
-            make_daily_basic_raw_df(turnover_rate="-1.0"),
-            make_daily_basic_task(),
-        )
 
 
 def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Path) -> None:
@@ -744,11 +775,17 @@ def make_daily_basic_raw_df(
     trade_date: str = "20240102",
     close: str = "10.2",
     turnover_rate: str = "1.5",
+    turnover_rate_f: str = "2.5",
     volume_ratio: str = "1.2",
     pe: str = "10.0",
     pe_ttm: str = "11.0",
     dv_ratio: str = "0.5",
     dv_ttm: str = "0.6",
+    total_share: str = "100000.0",
+    float_share: str = "80000.0",
+    free_share: str = "60000.0",
+    total_mv: str = "1000000.0",
+    circ_mv: str = "800000.0",
 ) -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -757,7 +794,7 @@ def make_daily_basic_raw_df(
                 "trade_date": trade_date,
                 "close": close,
                 "turnover_rate": turnover_rate,
-                "turnover_rate_f": "2.5",
+                "turnover_rate_f": turnover_rate_f,
                 "volume_ratio": volume_ratio,
                 "pe": pe,
                 "pe_ttm": pe_ttm,
@@ -766,11 +803,11 @@ def make_daily_basic_raw_df(
                 "ps_ttm": "2.1",
                 "dv_ratio": dv_ratio,
                 "dv_ttm": dv_ttm,
-                "total_share": "100000.0",
-                "float_share": "80000.0",
-                "free_share": "60000.0",
-                "total_mv": "1000000.0",
-                "circ_mv": "800000.0",
+                "total_share": total_share,
+                "float_share": float_share,
+                "free_share": free_share,
+                "total_mv": total_mv,
+                "circ_mv": circ_mv,
             }
         ]
     )
