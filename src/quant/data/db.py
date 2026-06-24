@@ -85,13 +85,22 @@ class DuckDBManager:
             """
             CREATE TABLE IF NOT EXISTS dim_security (
                 ts_code VARCHAR PRIMARY KEY,
-                symbol VARCHAR NOT NULL,
-                name VARCHAR NOT NULL,
-                exchange VARCHAR NOT NULL,
+                symbol VARCHAR,
+                name VARCHAR,
+                area VARCHAR,
+                industry VARCHAR,
+                fullname VARCHAR,
+                enname VARCHAR,
+                cnspell VARCHAR,
                 market VARCHAR,
-                list_date DATE,
-                delist_date DATE,
-                is_active BOOLEAN DEFAULT TRUE
+                exchange VARCHAR,
+                curr_type VARCHAR,
+                list_status VARCHAR,
+                list_date VARCHAR,
+                delist_date VARCHAR,
+                is_hs VARCHAR,
+                act_name VARCHAR,
+                act_ent_type VARCHAR
             )
             """
         )

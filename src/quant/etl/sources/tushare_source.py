@@ -21,9 +21,11 @@ from quant.data.fields import (
     ADJ_FACTOR_COLUMNS,
     DAILY_BASIC_COLUMNS,
     DAILY_OHLCV_COLUMNS,
+    SECURITY_COLUMNS,
     TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
     TUSHARE_DAILY_BASIC_RAW_COLUMNS,
     TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
+    TUSHARE_STOCK_BASIC_RAW_COLUMNS,
 )
 from quant.data.repository import QuantRepository
 from quant.etl.etl_model import ETLTask
@@ -40,6 +42,7 @@ from quant.utils import build_raw_path
 
 TUSHARE_REQUEST_SLEEP_SECONDS = 0.2
 MISSING_TRADE_CALENDAR_MESSAGE = "请先加载交易日历后再拉取日线行情"
+STOCK_BASIC_LIST_STATUSES = ("L", "D", "P")
 
 
 @dataclass(frozen=True)
@@ -179,6 +182,40 @@ class _TushareApiClient:
         )
         return df
 
+    def fetch_stock_basic(self) -> DataFrame:
+        """调用 Tushare 股票基础信息接口。"""
+        fields = ",".join(TUSHARE_STOCK_BASIC_RAW_COLUMNS)
+        frames: list[DataFrame] = []
+        for list_status in STOCK_BASIC_LIST_STATUSES:
+            _sleep_before_request()
+            logger.bind(module="etl").info(
+                "开始调用 Tushare 股票基础信息接口: list_status={}",
+                list_status,
+            )
+            try:
+                result = self._pro_api.stock_basic(list_status=list_status, fields=fields)
+            except Exception:
+                logger.bind(module="etl").exception(
+                    "Tushare 股票基础信息接口调用失败: list_status={}",
+                    list_status,
+                )
+                raise
+
+            df = cast(DataFrame, result)
+            logger.bind(module="etl").info(
+                "Tushare 股票基础信息接口返回完成: list_status={}, 行数={}",
+                list_status,
+                len(df.index),
+            )
+            if df.empty:
+                frames.append(pd.DataFrame(columns=list(TUSHARE_STOCK_BASIC_RAW_COLUMNS)))
+            else:
+                frames.append(df)
+
+        if not frames:
+            return pd.DataFrame(columns=list(TUSHARE_STOCK_BASIC_RAW_COLUMNS))
+        return pd.concat(frames, ignore_index=True)
+
 
 class TushareSource:
     """Tushare 数据源适配器, 统一承载 fetch/load/archive。"""
@@ -197,6 +234,8 @@ class TushareSource:
             return self.fetch_adj_factor(task)
         if task.dataset == "daily-basic":
             return self.fetch_daily_basic(task)
+        if task.dataset == "stock-basic":
+            return self.fetch_stock_basic(task)
         raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
     def load_raw(self, task: ETLTask) -> int:
@@ -209,6 +248,8 @@ class TushareSource:
             return self.load_adj_factor(task)
         if task.dataset == "daily-basic":
             return self.load_daily_basic(task)
+        if task.dataset == "stock-basic":
+            return self.load_stock_basic(task)
         raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
     def archive_year(self, dataset: str, year: int) -> Path:
@@ -245,6 +286,10 @@ class TushareSource:
     def fetch_daily_basic(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
         """按本地交易日历逐日拉取 Tushare 每日指标原始数据。"""
         return self._fetch_daily_dataset(task, TUSHARE_DAILY_FETCH_SPECS["daily-basic"])
+
+    def fetch_stock_basic(self, _task: ETLTask) -> DataFrame:
+        """拉取 Tushare 股票基础信息快照。"""
+        return self._api().fetch_stock_basic()
 
     def load_trade_calendar(self, task: ETLTask) -> int:
         """读取 Tushare 交易日历 raw CSV, 标准化后写入 DuckDB。"""
@@ -296,6 +341,34 @@ class TushareSource:
     def load_daily_basic(self, task: ETLTask) -> int:
         """读取 Tushare 每日指标 raw CSV, 标准化后写入月度 processed Parquet。"""
         return self._load_daily_dataset(task, TUSHARE_DAILY_LOAD_SPECS["daily-basic"])
+
+    def load_stock_basic(self, task: ETLTask) -> int:
+        """读取 Tushare 股票基础信息 raw CSV, 全量覆盖写入 DuckDB。"""
+        raw_path = build_raw_path(self._config.paths.raw_dir, task)
+        if not raw_path.is_file():
+            raise FileNotFoundError(f"未找到股票基础信息 raw CSV 文件: {raw_path}")
+
+        logger.bind(module="etl").info("开始加载 Tushare 股票基础信息 raw: 路径={}", raw_path)
+        raw_df = read_raw_csv(raw_path)
+        missing_columns = [column for column in SECURITY_COLUMNS if column not in raw_df.columns]
+        if missing_columns:
+            raise ValueError(f"股票基础信息 raw 缺少字段: {missing_columns}")
+
+        security_df = raw_df.loc[:, list(SECURITY_COLUMNS)].copy()
+        row_count = replace_table_dataframe(
+            self._config.paths.database_path,
+            self._config.paths.processed_dir,
+            table="dim_security",
+            df=security_df,
+            columns=SECURITY_COLUMNS,
+            delete_where="1 = 1",
+            delete_params=[],
+        )
+        logger.bind(module="etl").info(
+            "股票基础信息写入 DuckDB 完成: 表=dim_security, 行数={}",
+            row_count,
+        )
+        return row_count
 
     def _fetch_daily_dataset(
         self,

@@ -38,6 +38,18 @@ def test_trade_calendar_raw_path_uses_single_file(tmp_path: Path) -> None:
     assert path == tmp_path / "tushare" / "trade-calendar" / "trade-calendar_tushare.csv"
 
 
+def test_stock_basic_raw_path_uses_single_file(tmp_path: Path) -> None:
+    task = ETLTask(
+        dataset="stock-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+    path = build_raw_path(tmp_path, task)
+
+    assert path == tmp_path / "tushare" / "stock-basic" / "stock-basic_tushare.csv"
+
+
 def test_partitioned_raw_files_scan_multiple_months(tmp_path: Path) -> None:
     january_task = ETLTask(
         dataset="daily-ohlcv",
@@ -340,6 +352,36 @@ def test_fetch_raw_data_writes_daily_basic_daily_files(monkeypatch, tmp_path: Pa
     assert read_raw_csv(paths[0]).to_dict(orient="records") == [
         {"ts_code": "000001.SZ", "trade_date": "20240102", "turnover_rate": "1.5"}
     ]
+
+
+def test_fetch_raw_data_writes_stock_basic_single_file(monkeypatch, tmp_path: Path) -> None:
+    config = load_config(config_dir=make_config_dir(tmp_path))
+    task = ETLTask(
+        dataset="stock-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+
+    def fake_fetch_tushare_raw(_config, _task):
+        return pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "symbol": "000001",
+                    "name": "平安银行",
+                    "list_status": "L",
+                }
+            ]
+        )
+
+    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
+
+    paths = fetch_raw_data(config, task)
+
+    expected_path = config.paths.raw_dir / "tushare" / "stock-basic" / "stock-basic_tushare.csv"
+    assert paths == (expected_path,)
+    assert read_raw_csv(expected_path)["ts_code"].tolist() == ["000001.SZ"]
 
 
 def make_config_dir(tmp_path: Path) -> Path:

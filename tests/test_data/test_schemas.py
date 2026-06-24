@@ -9,6 +9,7 @@ from quant.data.schemas import (
     DailyOHLCVRecord,
     FactorRecord,
     FundamentalRecord,
+    SecurityRecord,
 )
 
 
@@ -149,6 +150,40 @@ def test_daily_basic_rejects_invalid_ts_code_and_negative_values() -> None:
             dv_ratio=-1.0,
             dv_ttm=-1.0,
         )
+
+
+def test_security_record_matches_stock_basic_contract() -> None:
+    record = SecurityRecord(
+        ts_code="000001.SZ",
+        symbol="000001",
+        name="平安银行",
+        area="深圳",
+        industry="银行",
+        fullname="平安银行股份有限公司",
+        enname="Ping An Bank Co., Ltd.",
+        cnspell="payh",
+        market="主板",
+        exchange="SZSE",
+        curr_type="CNY",
+        list_status="L",
+        list_date="19910403",
+        delist_date=None,
+        is_hs="S",
+        act_name="无",
+        act_ent_type="无",
+    )
+
+    schema = SecurityRecord.model_json_schema()
+
+    assert record.list_status == "L"
+    assert schema["properties"]["fullname"]["description"] == "证券全称"
+    assert (
+        schema["properties"]["list_status"]["description"]
+        == "上市状态, L=上市, D=退市, P=暂停上市"
+    )
+
+    with pytest.raises(ValidationError, match="Input should be"):
+        SecurityRecord(ts_code="000001.SZ", list_status="A")
 
 
 def test_fundamental_record_preserves_announcement_and_report_dates() -> None:

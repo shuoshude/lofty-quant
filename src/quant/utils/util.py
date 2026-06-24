@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from quant.config import QuantConfig
     from quant.etl import ETLTask
 
-SINGLE_FILE_RAW_DATASETS = {"trade-calendar"}
+SINGLE_FILE_RAW_DATASETS = {"trade-calendar", "stock-basic"}
 DAILY_FILE_RAW_DATASETS = {"daily-ohlcv", "adj-factor", "daily-basic"}
 
 

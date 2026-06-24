@@ -72,6 +72,12 @@ def fetch_raw_data(config: QuantConfig, task: ETLTask) -> tuple[Path, ...]:
         task.end_date,
         task.exchange or "-",
     )
+    if is_single_file_raw_dataset(task) and not task.force and not task.dry_run:
+        raw_path = build_raw_path(config.paths.raw_dir, task)
+        if raw_path.is_file():
+            logger.bind(module="etl").info("raw CSV 已存在, 跳过外部接口请求: 路径={}", raw_path)
+            return (raw_path,)
+
     if task.source == "tushare":
         raw_result = _fetch_tushare_raw(config, task)
     else:

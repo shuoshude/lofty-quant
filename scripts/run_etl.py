@@ -20,7 +20,9 @@ app = typer.Typer(help="lofty-quant ETL 轻量入口")
 
 DatasetArg = Annotated[
     str,
-    typer.Argument(help="数据集名称, 例如 daily-ohlcv、daily-basic、adj-factor 或 trade-calendar"),
+    typer.Argument(
+        help="数据集名称, 例如 stock-basic、daily-ohlcv、daily-basic、adj-factor 或 trade-calendar"
+    ),
 ]
 SourceOption = Annotated[str, typer.Option("--source", "-s", help="数据源名称")]
 ConfigDirOption = Annotated[str | None, typer.Option("--config-dir", help="配置目录")]
@@ -212,6 +214,24 @@ def status(
         typer.echo(f"证券数: {state['security_count']}")
         return
 
+    if dataset == "stock-basic":
+        with _status_session(config) as conn:
+            state = _get_stock_basic_status(conn)
+        logger.bind(module="etl").info(
+            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
+            dataset,
+            source or "*",
+            state["row_count"],
+        )
+        typer.echo(f"数据集: {dataset}")
+        typer.echo(f"数据源: {source or '*'}")
+        typer.echo(f"证券总数: {state['row_count']}")
+        typer.echo(f"交易所数量: {state['exchange_count']}")
+        typer.echo(f"上市数量: {state['listed_count']}")
+        typer.echo(f"退市数量: {state['delisted_count']}")
+        typer.echo(f"暂停上市数量: {state['paused_count']}")
+        return
+
     raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
 
 
@@ -286,6 +306,38 @@ def _get_daily_basic_status(config: QuantConfig) -> dict[str, object]:
     )
 
 
+def _get_stock_basic_status(conn: DuckDBPyConnection) -> dict[str, object]:
+    """从证券主数据表聚合真实状态。"""
+    row = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS row_count,
+            COUNT(DISTINCT exchange) AS exchange_count,
+            SUM(CASE WHEN list_status = 'L' THEN 1 ELSE 0 END) AS listed_count,
+            SUM(CASE WHEN list_status = 'D' THEN 1 ELSE 0 END) AS delisted_count,
+            SUM(CASE WHEN list_status = 'P' THEN 1 ELSE 0 END) AS paused_count
+        FROM dim_security
+        """
+    ).fetchone()
+    if row is None:
+        return {
+            "row_count": 0,
+            "exchange_count": 0,
+            "listed_count": 0,
+            "delisted_count": 0,
+            "paused_count": 0,
+        }
+
+    row_count, exchange_count, listed_count, delisted_count, paused_count = row
+    return {
+        "row_count": int(row_count or 0),
+        "exchange_count": int(exchange_count or 0),
+        "listed_count": int(listed_count or 0),
+        "delisted_count": int(delisted_count or 0),
+        "paused_count": int(paused_count or 0),
+    }
+
+
 def _get_daily_processed_status(
     config: QuantConfig,
     *,
@@ -356,8 +408,13 @@ def _build_task(
     dry_run: bool,
 ) -> ETLTask:
     """构造 ETL 任务并校验日期。"""
-    parsed_start_date = _require_date(start_date, "--start-date")
-    parsed_end_date = _require_date(end_date, "--end-date")
+    if dataset == "stock-basic":
+        default_date = date.today()
+        parsed_start_date = _parse_optional_date(start_date, "--start-date") or default_date
+        parsed_end_date = _parse_optional_date(end_date, "--end-date") or parsed_start_date
+    else:
+        parsed_start_date = _require_date(start_date, "--start-date")
+        parsed_end_date = _require_date(end_date, "--end-date")
     if parsed_start_date > parsed_end_date:
         raise typer.BadParameter("开始日期不能晚于结束日期")
     return ETLTask(
@@ -371,10 +428,22 @@ def _build_task(
     )
 
 
+def _parse_optional_date(value: str | None, option_name: str) -> date | None:
+    """解析可选日期参数。"""
+    if value is None:
+        return None
+    return _parse_date(value, option_name)
+
+
 def _require_date(value: str | None, option_name: str) -> date:
     """解析必填日期参数。"""
     if value is None:
         raise typer.BadParameter(f"{option_name} 不能为空")
+    return _parse_date(value, option_name)
+
+
+def _parse_date(value: str, _option_name: str) -> date:
+    """解析日期文本。"""
     normalized = value.strip()
     for pattern in ("%Y%m%d", "%Y-%m-%d"):
         try:

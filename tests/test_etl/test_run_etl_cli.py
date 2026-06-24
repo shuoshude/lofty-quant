@@ -73,6 +73,46 @@ def test_fetch_command_can_print_multiple_raw_paths(monkeypatch, tmp_path: Path)
     assert "daily-ohlcv_tushare_20240103.csv" in result.output
 
 
+def test_stock_basic_commands_allow_omitted_dates(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    calls: list[str] = []
+    patch_runtime(monkeypatch, run_etl, tmp_path)
+
+    def fake_fetch(config, task):
+        calls.append(f"fetch:{task.dataset}:{task.start_date}:{task.end_date}")
+        return (config.paths.raw_dir / "stock-basic_tushare.csv",)
+
+    def fake_load(_config, task):
+        calls.append(f"load:{task.dataset}:{task.start_date}:{task.end_date}")
+        return 3
+
+    monkeypatch.setattr(run_etl, "fetch_raw_data", fake_fetch)
+    monkeypatch.setattr(run_etl, "load_raw_data", fake_load)
+
+    fetch_result = CliRunner().invoke(
+        run_etl.app,
+        ["fetch", "stock-basic", "--source", "tushare"],
+    )
+    load_result = CliRunner().invoke(
+        run_etl.app,
+        ["load", "stock-basic", "--source", "tushare"],
+    )
+    backfill_result = CliRunner().invoke(
+        run_etl.app,
+        ["backfill", "stock-basic", "--source", "tushare"],
+    )
+
+    assert fetch_result.exit_code == 0
+    assert load_result.exit_code == 0
+    assert backfill_result.exit_code == 0
+    assert [call.split(":")[:2] for call in calls] == [
+        ["fetch", "stock-basic"],
+        ["load", "stock-basic"],
+        ["fetch", "stock-basic"],
+        ["load", "stock-basic"],
+    ]
+
+
 def test_load_command_calls_load_function(monkeypatch, tmp_path: Path) -> None:
     run_etl = load_run_etl_module()
     calls: list[str] = []
@@ -424,6 +464,42 @@ def test_status_command_reads_daily_basic_processed_state(monkeypatch, tmp_path:
     assert "证券数: 5" in result.output
 
 
+def test_status_command_reads_stock_basic_table(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+
+    def fake_status(conn):
+        return {
+            "row_count": 5000,
+            "exchange_count": 3,
+            "listed_count": 4800,
+            "delisted_count": 180,
+            "paused_count": 20,
+        }
+
+    monkeypatch.setattr(run_etl, "_get_stock_basic_status", fake_status)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "status",
+            "stock-basic",
+            "--source",
+            "tushare",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "数据集: stock-basic" in result.output
+    assert "证券总数: 5000" in result.output
+    assert "交易所数量: 3" in result.output
+    assert "上市数量: 4800" in result.output
+    assert "退市数量: 180" in result.output
+    assert "暂停上市数量: 20" in result.output
+
+
 def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
     run_etl = load_run_etl_module()
     config = load_config(config_dir=make_config_dir(tmp_path))
@@ -511,6 +587,32 @@ def test_adj_factor_status_reads_processed_view(tmp_path: Path) -> None:
     assert state["row_count"] == 3
     assert state["trade_date_count"] == 2
     assert state["security_count"] == 2
+
+
+def test_stock_basic_status_reads_dim_security(tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config = load_config(config_dir=make_config_dir(tmp_path))
+    manager = run_etl.DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+    manager.initialize()
+    with manager.session() as conn:
+        conn.executemany(
+            """
+            INSERT INTO dim_security (ts_code, symbol, name, exchange, list_status)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("000001.SZ", "000001", "平安银行", "SZSE", "L"),
+                ("000002.SZ", "000002", "万科A", "SZSE", "D"),
+                ("600000.SH", "600000", "浦发银行", "SSE", "P"),
+            ],
+        )
+        state = run_etl._get_stock_basic_status(conn)
+
+    assert state["row_count"] == 3
+    assert state["exchange_count"] == 2
+    assert state["listed_count"] == 1
+    assert state["delisted_count"] == 1
+    assert state["paused_count"] == 1
 
 
 def patch_runtime(monkeypatch, run_etl: ModuleType, tmp_path: Path) -> None:

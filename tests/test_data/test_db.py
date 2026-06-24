@@ -24,11 +24,25 @@ def test_initialize_empty_processed_dir_creates_physical_tables(tmp_path: Path) 
         }
         calendar_comment = get_column_comment(conn, "dim_trade_calendar", "cal_date")
         security_comment = get_column_comment(conn, "dim_security", "ts_code")
+        list_status_comment = get_column_comment(conn, "dim_security", "list_status")
+        security_columns = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'dim_security'
+                """
+            ).fetchall()
+        }
 
     assert {"dim_security", "dim_trade_calendar", "etl_manifest"}.issubset(tables)
     assert "v_daily_ohlcv" not in tables
     assert calendar_comment == "自然日"
     assert security_comment == "证券代码, 使用 Tushare 交易所后缀格式"
+    assert list_status_comment == "上市状态, L=上市, D=退市, P=暂停上市"
+    assert "fullname" in security_columns
+    assert "is_active" not in security_columns
 
 
 def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Path) -> None:

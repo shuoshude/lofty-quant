@@ -10,6 +10,7 @@ from quant.data.fields import (
     TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
     TUSHARE_DAILY_BASIC_RAW_COLUMNS,
     TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
+    TUSHARE_STOCK_BASIC_RAW_COLUMNS,
 )
 from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
@@ -392,6 +393,82 @@ def test_tushare_source_daily_basic_returns_empty_columns(
     assert list(df.columns) == list(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
 
 
+def test_tushare_source_fetches_stock_basic_all_statuses(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    stock_basic_calls: list[tuple[str, str]] = []
+    sleep_calls: list[str] = []
+
+    class FakeApi:
+        def stock_basic(self, *, list_status, fields):
+            stock_basic_calls.append((list_status, fields))
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": f"00000{len(stock_basic_calls)}.SZ",
+                        "symbol": f"00000{len(stock_basic_calls)}",
+                        "name": f"测试{list_status}",
+                        "list_status": list_status,
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
+
+    task = ETLTask(
+        dataset="stock-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+
+    df = TushareSource(config).fetch_stock_basic(task)
+
+    expected_fields = ",".join(TUSHARE_STOCK_BASIC_RAW_COLUMNS)
+    assert stock_basic_calls == [
+        ("L", expected_fields),
+        ("D", expected_fields),
+        ("P", expected_fields),
+    ]
+    assert sleep_calls == ["sleep", "sleep", "sleep"]
+    assert df["list_status"].tolist() == ["L", "D", "P"]
+
+
+def test_tushare_source_stock_basic_returns_empty_columns(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+
+    class FakeApi:
+        def stock_basic(self, *, list_status, fields):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    task = ETLTask(
+        dataset="stock-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+
+    df = TushareSource(config).fetch_stock_basic(task)
+
+    assert df.empty
+    assert list(df.columns) == list(TUSHARE_STOCK_BASIC_RAW_COLUMNS)
+
+
 def test_tushare_source_daily_ohlcv_requires_trade_calendar(
     monkeypatch,
     tmp_path: Path,
@@ -737,6 +814,56 @@ def test_load_trade_calendar_reads_single_raw_csv_and_writes_duckdb(tmp_path: Pa
     assert calendar_row == ("SSE", date(2024, 1, 2), True, date(2023, 12, 29))
 
 
+def test_load_stock_basic_reads_single_raw_csv_and_replaces_duckdb(tmp_path: Path) -> None:
+    config = make_config(tmp_path, token=None)
+    task = ETLTask(
+        dataset="stock-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+    raw_path = build_raw_path(config.paths.raw_dir, task)
+    write_raw_csv(raw_path, make_stock_basic_raw_df(ts_code="000001.SZ", name="平安银行"))
+
+    row_count = TushareSource(config).load_stock_basic(task)
+    write_raw_csv(raw_path, make_stock_basic_raw_df(ts_code="000002.SZ", name="万科A"))
+    second_count = TushareSource(config).load_stock_basic(task)
+
+    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+    with manager.session() as conn:
+        rows = conn.execute(
+            """
+            SELECT ts_code, name, list_status, list_date
+            FROM dim_security
+            ORDER BY ts_code
+            """
+        ).fetchall()
+
+    assert row_count == 1
+    assert second_count == 1
+    assert rows == [("000002.SZ", "万科A", "L", "19910129")]
+
+
+def test_load_stock_basic_rejects_missing_raw_and_missing_columns(tmp_path: Path) -> None:
+    config = make_config(tmp_path, token=None)
+    task = ETLTask(
+        dataset="stock-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+
+    with pytest.raises(FileNotFoundError, match="未找到股票基础信息 raw CSV 文件"):
+        TushareSource(config).load_stock_basic(task)
+
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame([{"ts_code": "000001.SZ", "symbol": "000001"}]),
+    )
+    with pytest.raises(ValueError, match="股票基础信息 raw 缺少字段"):
+        TushareSource(config).load_stock_basic(task)
+
+
 def make_daily_task() -> ETLTask:
     return ETLTask(
         dataset="daily-ohlcv",
@@ -844,6 +971,38 @@ def make_daily_basic_raw_df(
                 "free_share": free_share,
                 "total_mv": total_mv,
                 "circ_mv": circ_mv,
+            }
+        ]
+    )
+
+
+def make_stock_basic_raw_df(
+    *,
+    ts_code: str = "000001.SZ",
+    symbol: str = "000001",
+    name: str = "平安银行",
+    list_status: str = "L",
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "ts_code": ts_code,
+                "symbol": symbol,
+                "name": name,
+                "area": "深圳",
+                "industry": "银行",
+                "fullname": f"{name}股份有限公司",
+                "enname": "Test Co., Ltd.",
+                "cnspell": "cs",
+                "market": "主板",
+                "exchange": "SZSE",
+                "curr_type": "CNY",
+                "list_status": list_status,
+                "list_date": "19910129",
+                "delist_date": "",
+                "is_hs": "S",
+                "act_name": "",
+                "act_ent_type": "",
             }
         ]
     )

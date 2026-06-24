@@ -11,10 +11,12 @@ from quant.data.fields import (
     ADJ_FACTOR_FIELD_COMMENTS,
     DAILY_BASIC_FIELD_COMMENTS,
     DAILY_OHLCV_FIELD_COMMENTS,
+    SECURITY_FIELD_COMMENTS,
 )
 
 TsCode = str
 LimitStatus = Literal["up", "down", "none"]
+SecurityListStatus = Literal["L", "D", "P"]
 
 
 class AShareRecord(BaseModel):
@@ -40,13 +42,31 @@ class AShareRecord(BaseModel):
 class SecurityRecord(AShareRecord):
     """证券主数据。"""
 
-    symbol: str = Field(description="证券数字代码")
-    name: str = Field(description="证券简称")
-    exchange: str = Field(description="交易所代码")
-    market: str | None = Field(default=None, description="市场板块")
-    list_date: date | None = Field(default=None, description="上市日期")
-    delist_date: date | None = Field(default=None, description="退市日期")
-    is_active: bool = Field(default=True, description="是否仍处于活跃交易状态")
+    symbol: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["symbol"])
+    name: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["name"])
+    area: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["area"])
+    industry: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["industry"])
+    fullname: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["fullname"])
+    enname: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["enname"])
+    cnspell: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["cnspell"])
+    market: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["market"])
+    exchange: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["exchange"])
+    curr_type: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["curr_type"])
+    list_status: SecurityListStatus | None = Field(
+        default=None,
+        description=SECURITY_FIELD_COMMENTS["list_status"],
+    )
+    list_date: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["list_date"])
+    delist_date: str | None = Field(
+        default=None,
+        description=SECURITY_FIELD_COMMENTS["delist_date"],
+    )
+    is_hs: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["is_hs"])
+    act_name: str | None = Field(default=None, description=SECURITY_FIELD_COMMENTS["act_name"])
+    act_ent_type: str | None = Field(
+        default=None,
+        description=SECURITY_FIELD_COMMENTS["act_ent_type"],
+    )
 
 
 class TradeCalendarRecord(BaseModel):

@@ -513,6 +513,45 @@ def test_load_daily_basic_skips_empty_raw(tmp_path: Path) -> None:
     assert not daily_basic_month_path(config, 2024, 1).exists()
 
 
+def test_load_stock_basic_overwrites_dim_security(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = stock_basic_task()
+    write_stock_basic_raw(config, ts_code="000001.SZ", name="平安银行")
+
+    row_count = load_raw_data(config, task)
+    write_stock_basic_raw(config, ts_code="000002.SZ", symbol="000002", name="万科A")
+    second_count = load_raw_data(config, task)
+
+    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+    with manager.session() as conn:
+        rows = conn.execute(
+            """
+            SELECT ts_code, symbol, name, list_status, list_date
+            FROM dim_security
+            ORDER BY ts_code
+            """
+        ).fetchall()
+
+    assert row_count == 1
+    assert second_count == 1
+    assert rows == [("000002.SZ", "000002", "万科A", "L", "19910129")]
+
+
+def test_load_stock_basic_rejects_missing_raw_and_missing_columns(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = stock_basic_task()
+
+    with pytest.raises(FileNotFoundError, match="未找到股票基础信息 raw CSV 文件"):
+        load_raw_data(config, task)
+
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame([{"ts_code": "000001.SZ", "symbol": "000001"}]),
+    )
+    with pytest.raises(ValueError, match="股票基础信息 raw 缺少字段"):
+        load_raw_data(config, task)
+
+
 def test_archive_daily_ohlcv_year_merges_month_files_and_removes_them(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     archive_year = date.today().year - 1
@@ -649,6 +688,15 @@ def daily_basic_task(start_date: date, end_date: date) -> ETLTask:
     )
 
 
+def stock_basic_task() -> ETLTask:
+    return ETLTask(
+        dataset="stock-basic",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+    )
+
+
 def write_daily_raw(
     config: QuantConfig,
     raw_date: date,
@@ -751,6 +799,43 @@ def write_daily_basic_raw(
                     "free_share": free_share,
                     "total_mv": total_mv,
                     "circ_mv": circ_mv,
+                }
+            ]
+        ),
+    )
+
+
+def write_stock_basic_raw(
+    config: QuantConfig,
+    *,
+    ts_code: str,
+    name: str,
+    symbol: str = "000001",
+) -> None:
+    task = stock_basic_task()
+    raw_path = build_raw_path(config.paths.raw_dir, task)
+    write_raw_csv(
+        raw_path,
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": ts_code,
+                    "symbol": symbol,
+                    "name": name,
+                    "area": "深圳",
+                    "industry": "银行",
+                    "fullname": f"{name}股份有限公司",
+                    "enname": "Test Co., Ltd.",
+                    "cnspell": "cs",
+                    "market": "主板",
+                    "exchange": "SZSE",
+                    "curr_type": "CNY",
+                    "list_status": "L",
+                    "list_date": "19910129",
+                    "delist_date": "",
+                    "is_hs": "S",
+                    "act_name": "",
+                    "act_ent_type": "",
                 }
             ]
         ),
