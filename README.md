@@ -252,54 +252,61 @@ ETL 分为两个阶段:
 外部数据源 -> fetch -> data/raw -> load -> DuckDB 或 processed Parquet
 ```
 
-阶段命令可以独立执行:
+阶段命令可以独立执行。ETL 使用 Tushare `SSE` 交易日历作为本地统一 A 股开闭市日历,脚本入口不再暴露交易所参数。
 
 ```bash
 uv run python scripts/run_etl.py fetch trade-calendar \
   --source tushare \
-  --exchange SSE \
   --start-date 20240101 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py load trade-calendar \
   --source tushare \
-  --exchange SSE \
   --start-date 20240101 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py fetch daily-ohlcv \
   --source tushare \
-  --exchange SSE \
   --start-date 20240102 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py load daily-ohlcv \
   --source tushare \
-  --exchange SSE \
   --start-date 20240102 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py fetch adj-factor \
   --source tushare \
-  --exchange SSE \
   --start-date 20240102 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py load adj-factor \
   --source tushare \
-  --exchange SSE \
   --start-date 20240102 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py fetch daily-basic \
   --source tushare \
-  --exchange SSE \
   --start-date 20240102 \
   --end-date 20240131
 
 uv run python scripts/run_etl.py load daily-basic \
   --source tushare \
-  --exchange SSE \
+  --start-date 20240102 \
+  --end-date 20240131
+
+uv run python scripts/run_etl.py fetch stock-st \
+  --source tushare \
+  --start-date 20240102 \
+  --end-date 20240131
+
+uv run python scripts/run_etl.py fetch stk-limit \
+  --source tushare \
+  --start-date 20240102 \
+  --end-date 20240131
+
+uv run python scripts/run_etl.py fetch suspend-d \
+  --source tushare \
   --start-date 20240102 \
   --end-date 20240131
 
@@ -315,7 +322,6 @@ uv run python scripts/run_etl.py load stock-basic \
 ```bash
 uv run python scripts/run_etl.py backfill trade-calendar \
   --source tushare \
-  --exchange SSE \
   --start-date 20130101 \
   --end-date 20260617
 
@@ -349,6 +355,7 @@ uv run python scripts/run_etl.py archive daily-ohlcv \
 - **adj-factor + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `adj_factor` 接口,每个交易日保存一个 raw CSV;load 时把 Tushare `adj_factor` 标准化为项目字段 `cumulative_factor`,再写入月度 processed Parquet。
 - **daily-basic + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `daily_basic` 接口,每个交易日保存一个 raw CSV;load 时按 Tushare 官方每日指标字段约定标准化并做 Pydantic 契约校验,再写入月度 processed Parquet。
 - **stock-basic + tushare**:依次拉取 Tushare `stock_basic(list_status="L/D/P")`,合并为单个 raw CSV;load 时按接口字段选择列并全量覆盖 DuckDB `dim_security`,不做派生字段和契约校验。
+- **stock-st / stk-limit / suspend-d + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `stock_st`, `stk_limit`, `suspend_d` 接口,只保存 raw CSV;不做 load、processed、DuckDB 视图或数据契约校验。
 
 ### raw 层约定
 
@@ -363,6 +370,9 @@ data/raw/tushare/stock-basic/stock-basic_tushare.csv
 data/raw/tushare/daily-ohlcv/year=2024/month=01/daily-ohlcv_tushare_20240102.csv
 data/raw/tushare/adj-factor/year=2024/month=01/adj-factor_tushare_20240102.csv
 data/raw/tushare/daily-basic/year=2024/month=01/daily-basic_tushare_20240102.csv
+data/raw/tushare/stock-st/year=2024/month=01/stock-st_tushare_20240102.csv
+data/raw/tushare/stk-limit/year=2024/month=01/stk-limit_tushare_20240102.csv
+data/raw/tushare/suspend-d/year=2024/month=01/suspend-d_tushare_20240102.csv
 ```
 
 raw 文件是 fetch 阶段的输入缓存,不代表当前完整数据状态;DuckDB 表或 processed Parquet 才是 load 后的事实源。
@@ -373,9 +383,13 @@ raw 文件是 fetch 阶段的输入缓存,不代表当前完整数据状态;Duck
 
 load 阶段只检查目标字段是否存在,然后全量覆盖写入 `dim_security`。`list_status` 保留 Tushare 的 `L/D/P` 语义,分别表示上市、退市、暂停上市;项目不再维护派生字段 `is_active`。
 
+### raw-only 日频数据约定
+
+`stock-st`, `stk-limit`, `suspend-d` 当前只作为原始数据缓存使用。字段表头在 `src/quant/data/fields.py` 中集中声明,fetch 时会作为 Tushare `fields` 参数传入,空结果也会写出固定表头。后续如果这些数据要进入研究层,再单独设计 processed 表和 DuckDB 视图。
+
 ### 日频 fetch 的限速与断点续传
 
-拉取 Tushare 日线行情、复权因子和每日指标前,需要先完成交易日历加载。日频接口会按 `dim_trade_calendar` 中的开市日逐日请求,并在请求之间固定等待 0.2 秒,避免超过 Tushare 每分钟 500 次的限制。fetch 主流程每拉一天就立即落盘一个 raw CSV,不会把整个时间跨度的数据全部堆积在内存中。
+拉取 Tushare 日线行情、复权因子、每日指标和 raw-only 日频数据前,需要先完成交易日历加载。日频接口会按 `dim_trade_calendar` 中的开市日逐日请求,并在请求之间固定等待 0.2 秒,避免超过 Tushare 每分钟 500 次的限制。fetch 主流程每拉一天就立即落盘一个 raw CSV,不会把整个时间跨度的数据全部堆积在内存中。
 
 `fetch` 默认跳过已存在的 raw 文件(断点续传),需要强制覆盖时加 `--force`:
 

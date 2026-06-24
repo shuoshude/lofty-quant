@@ -73,6 +73,40 @@ def test_fetch_command_can_print_multiple_raw_paths(monkeypatch, tmp_path: Path)
     assert "daily-ohlcv_tushare_20240103.csv" in result.output
 
 
+def test_fetch_command_supports_raw_only_daily_datasets(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    calls: list[str] = []
+    patch_runtime(monkeypatch, run_etl, tmp_path)
+
+    def fake_fetch(config, task):
+        calls.append(task.dataset)
+        return (
+            config.paths.raw_dir / task.dataset / f"{task.dataset}_tushare_20240102.csv",
+        )
+
+    monkeypatch.setattr(run_etl, "fetch_raw_data", fake_fetch)
+
+    for dataset in ("stock-st", "stk-limit", "suspend-d"):
+        result = CliRunner().invoke(
+            run_etl.app,
+            [
+                "fetch",
+                dataset,
+                "--source",
+                "tushare",
+                "--start-date",
+                "20240102",
+                "--end-date",
+                "20240102",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert f"{dataset}_tushare_20240102.csv" in result.output
+
+    assert calls == ["stock-st", "stk-limit", "suspend-d"]
+
+
 def test_stock_basic_commands_allow_omitted_dates(monkeypatch, tmp_path: Path) -> None:
     run_etl = load_run_etl_module()
     calls: list[str] = []
@@ -198,6 +232,55 @@ def test_load_daily_ohlcv_reports_missing_raw_file(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "未找到日线行情 raw CSV 文件" in result.output
+
+
+def test_raw_only_daily_datasets_do_not_support_load_or_backfill(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+
+    load_result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "load",
+            "stock-st",
+            "--source",
+            "tushare",
+            "--start-date",
+            "20240102",
+            "--end-date",
+            "20240102",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    def fake_fetch(config, task):
+        return (config.paths.raw_dir / "stock-st_tushare_20240102.csv",)
+
+    monkeypatch.setattr(run_etl, "fetch_raw_data", fake_fetch)
+    backfill_result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "backfill",
+            "stock-st",
+            "--source",
+            "tushare",
+            "--start-date",
+            "20240102",
+            "--end-date",
+            "20240102",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert load_result.exit_code != 0
+    assert backfill_result.exit_code != 0
+    assert "暂未实现数据集: dataset=stock-st, source=tushare" in load_result.output
+    assert "暂未实现数据集: dataset=stock-st, source=tushare" in backfill_result.output
 
 
 def test_archive_command_calls_archive_function(monkeypatch, tmp_path: Path) -> None:

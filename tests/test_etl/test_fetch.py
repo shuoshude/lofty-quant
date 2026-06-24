@@ -50,6 +50,25 @@ def test_stock_basic_raw_path_uses_single_file(tmp_path: Path) -> None:
     assert path == tmp_path / "tushare" / "stock-basic" / "stock-basic_tushare.csv"
 
 
+def test_raw_only_daily_dataset_paths_use_daily_file_layout(tmp_path: Path) -> None:
+    for dataset in ("stock-st", "stk-limit", "suspend-d"):
+        task = ETLTask(
+            dataset=dataset,
+            source="tushare",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 31),
+        )
+
+        assert build_raw_path(tmp_path, task) == (
+            tmp_path
+            / "tushare"
+            / dataset
+            / "year=2024"
+            / "month=01"
+            / f"{dataset}_tushare_20240102.csv"
+        )
+
+
 def test_partitioned_raw_files_scan_multiple_months(tmp_path: Path) -> None:
     january_task = ETLTask(
         dataset="daily-ohlcv",
@@ -382,6 +401,50 @@ def test_fetch_raw_data_writes_stock_basic_single_file(monkeypatch, tmp_path: Pa
     expected_path = config.paths.raw_dir / "tushare" / "stock-basic" / "stock-basic_tushare.csv"
     assert paths == (expected_path,)
     assert read_raw_csv(expected_path)["ts_code"].tolist() == ["000001.SZ"]
+
+
+def test_fetch_raw_data_writes_raw_only_daily_files(monkeypatch, tmp_path: Path) -> None:
+    config = load_config(config_dir=make_config_dir(tmp_path))
+    task = ETLTask(
+        dataset="stock-st",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 3),
+        exchange="SSE",
+    )
+
+    expected_paths = (
+        config.paths.raw_dir
+        / "tushare"
+        / "stock-st"
+        / "year=2024"
+        / "month=01"
+        / "stock-st_tushare_20240102.csv",
+        config.paths.raw_dir
+        / "tushare"
+        / "stock-st"
+        / "year=2024"
+        / "month=01"
+        / "stock-st_tushare_20240103.csv",
+    )
+
+    def fake_fetch_tushare_raw(_config, _task):
+        yield date(2024, 1, 2), pd.DataFrame(
+            [{"ts_code": "000001.SZ", "trade_date": "20240102", "type": "ST"}],
+        )
+        assert expected_paths[0].exists()
+        yield date(2024, 1, 3), pd.DataFrame(
+            [{"ts_code": "000002.SZ", "trade_date": "20240103", "type": "*ST"}],
+        )
+
+    monkeypatch.setattr("quant.etl.fetch._fetch_tushare_raw", fake_fetch_tushare_raw)
+
+    paths = fetch_raw_data(config, task)
+
+    assert paths == expected_paths
+    assert read_raw_csv(paths[0]).to_dict(orient="records") == [
+        {"ts_code": "000001.SZ", "trade_date": "20240102", "type": "ST"}
+    ]
 
 
 def make_config_dir(tmp_path: Path) -> Path:

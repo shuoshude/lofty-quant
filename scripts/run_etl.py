@@ -21,14 +21,16 @@ app = typer.Typer(help="lofty-quant ETL 轻量入口")
 DatasetArg = Annotated[
     str,
     typer.Argument(
-        help="数据集名称, 例如 stock-basic、daily-ohlcv、daily-basic、adj-factor 或 trade-calendar"
+        help=(
+            "数据集名称, 例如 stock-basic、daily-ohlcv、daily-basic、"
+            "adj-factor、stock-st、stk-limit、suspend-d 或 trade-calendar"
+        )
     ),
 ]
 SourceOption = Annotated[str, typer.Option("--source", "-s", help="数据源名称")]
 ConfigDirOption = Annotated[str | None, typer.Option("--config-dir", help="配置目录")]
 EnvironmentOption = Annotated[str | None, typer.Option("--environment", "-e", help="配置环境")]
 LogLevelOption = Annotated[str, typer.Option("--log-level", help="日志级别")]
-ExchangeOption = Annotated[str | None, typer.Option("--exchange", help="交易所")]
 YearOption = Annotated[int, typer.Option("--year", help="归档年份")]
 
 
@@ -38,7 +40,6 @@ def fetch(
     source: SourceOption,
     start_date: Annotated[str | None, typer.Option("--start-date", help="开始日期")] = None,
     end_date: Annotated[str | None, typer.Option("--end-date", help="结束日期")] = None,
-    exchange: ExchangeOption = None,
     force: Annotated[bool, typer.Option("--force", help="强制重新拉取并覆盖 raw")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="只拉取和校验, 不写 raw")] = False,
     config_dir: ConfigDirOption = None,
@@ -47,7 +48,7 @@ def fetch(
 ) -> None:
     """只拉取原始数据并写入 raw。"""
     config = _setup_runtime(config_dir, environment, log_level)
-    task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
+    task = _build_task(dataset, source, start_date, end_date, force, dry_run)
     try:
         output_paths = fetch_raw_data(config, task)
     except (FileNotFoundError, NotImplementedError, ValueError) as exc:
@@ -63,7 +64,6 @@ def load_command(
     source: SourceOption,
     start_date: Annotated[str | None, typer.Option("--start-date", help="开始日期")] = None,
     end_date: Annotated[str | None, typer.Option("--end-date", help="结束日期")] = None,
-    exchange: ExchangeOption = None,
     force: Annotated[bool, typer.Option("--force", help="强制重新加载并覆盖目标范围")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="只转换和校验, 不写目标存储")] = False,
     config_dir: ConfigDirOption = None,
@@ -72,7 +72,7 @@ def load_command(
 ) -> None:
     """从 raw 读取、清洗转换后写入目标存储。"""
     config = _setup_runtime(config_dir, environment, log_level)
-    task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
+    task = _build_task(dataset, source, start_date, end_date, force, dry_run)
     try:
         row_count = load_raw_data(config, task)
     except (FileNotFoundError, NotImplementedError, ValueError) as exc:
@@ -87,7 +87,6 @@ def backfill(
     source: SourceOption,
     start_date: Annotated[str | None, typer.Option("--start-date", help="开始日期")] = None,
     end_date: Annotated[str | None, typer.Option("--end-date", help="结束日期")] = None,
-    exchange: ExchangeOption = None,
     force: Annotated[bool, typer.Option("--force", help="强制重跑并覆盖旧数据")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="只拉取和校验, 不写入存储")] = False,
     config_dir: ConfigDirOption = None,
@@ -96,7 +95,7 @@ def backfill(
 ) -> None:
     """执行历史回填, 按 fetch -> load 编排。"""
     config = _setup_runtime(config_dir, environment, log_level)
-    task = _build_task(dataset, source, start_date, end_date, exchange, force, dry_run)
+    task = _build_task(dataset, source, start_date, end_date, force, dry_run)
     try:
         output_paths = fetch_raw_data(config, task)
         row_count = load_raw_data(config, task)
@@ -403,7 +402,6 @@ def _build_task(
     source: str,
     start_date: str | None,
     end_date: str | None,
-    exchange: str | None,
     force: bool,
     dry_run: bool,
 ) -> ETLTask:
@@ -422,7 +420,6 @@ def _build_task(
         source=source,
         start_date=parsed_start_date,
         end_date=parsed_end_date,
-        exchange=exchange,
         force=force,
         dry_run=dry_run,
     )

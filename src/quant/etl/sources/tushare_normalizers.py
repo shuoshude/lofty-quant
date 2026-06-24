@@ -25,7 +25,7 @@ from quant.etl.etl_model import ETLTask
 def normalize_trade_calendar_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     """将 Tushare 交易日历 raw DataFrame 向量化转换为项目标准表结构。"""
     _require_columns(raw_df, ["cal_date", "is_open"])
-    default_exchange = (task.exchange or "SSE").upper()
+    default_exchange = "SSE"
 
     output = pd.DataFrame(index=raw_df.index)
     output["exchange"] = _normalize_exchange_series(raw_df, default_exchange)

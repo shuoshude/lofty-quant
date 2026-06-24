@@ -21,7 +21,6 @@ def main() -> None:
     #     dataset="trade-calendar",
     #     start_date=date(2026, 6, 1),
     #     end_date=date(2026, 6, 13),
-    #     exchange="SSE",
     # )
     # fetch_raw_data(config, task)
     manager = DuckDBManager(

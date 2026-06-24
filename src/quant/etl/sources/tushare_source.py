@@ -25,7 +25,10 @@ from quant.data.fields import (
     TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
     TUSHARE_DAILY_BASIC_RAW_COLUMNS,
     TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
+    TUSHARE_STK_LIMIT_RAW_COLUMNS,
     TUSHARE_STOCK_BASIC_RAW_COLUMNS,
+    TUSHARE_STOCK_ST_RAW_COLUMNS,
+    TUSHARE_SUSPEND_D_RAW_COLUMNS,
 )
 from quant.data.repository import QuantRepository
 from quant.etl.etl_model import ETLTask
@@ -41,6 +44,7 @@ from quant.etl.storage import replace_table_dataframe
 from quant.utils import build_raw_path
 
 TUSHARE_REQUEST_SLEEP_SECONDS = 0.2
+TRADE_CALENDAR_EXCHANGE = "SSE"
 MISSING_TRADE_CALENDAR_MESSAGE = "请先加载交易日历后再拉取日线行情"
 STOCK_BASIC_LIST_STATUSES = ("L", "D", "P")
 
@@ -81,6 +85,21 @@ TUSHARE_DAILY_FETCH_SPECS: dict[str, TushareDailyFetchSpec] = {
         dataset="daily-basic",
         label="每日指标",
         raw_columns=TUSHARE_DAILY_BASIC_RAW_COLUMNS,
+    ),
+    "stock-st": TushareDailyFetchSpec(
+        dataset="stock-st",
+        label="ST 股票列表",
+        raw_columns=TUSHARE_STOCK_ST_RAW_COLUMNS,
+    ),
+    "stk-limit": TushareDailyFetchSpec(
+        dataset="stk-limit",
+        label="涨跌停价格",
+        raw_columns=TUSHARE_STK_LIMIT_RAW_COLUMNS,
+    ),
+    "suspend-d": TushareDailyFetchSpec(
+        dataset="suspend-d",
+        label="停牌股票列表",
+        raw_columns=TUSHARE_SUSPEND_D_RAW_COLUMNS,
     ),
 }
 
@@ -125,16 +144,15 @@ class _TushareApiClient:
 
     def fetch_trade_calendar(self, task: ETLTask) -> DataFrame:
         """调用 Tushare 交易日历接口。"""
-        exchange = task.exchange or ""
         logger.bind(module="etl").info(
             "开始调用 Tushare 交易日历接口: exchange={}, start_date={}, end_date={}",
-            exchange or "all",
+            TRADE_CALENDAR_EXCHANGE,
             task.start_date,
             task.end_date,
         )
         _sleep_before_request()
         result = self._pro_api.trade_cal(
-            exchange=exchange,
+            exchange=TRADE_CALENDAR_EXCHANGE,
             start_date=task.start_date.strftime("%Y%m%d"),
             end_date=task.end_date.strftime("%Y%m%d"),
         )
@@ -158,6 +176,21 @@ class _TushareApiClient:
                 result = self._pro_api.adj_factor(trade_date=trade_date_text)
             elif spec.dataset == "daily-basic":
                 result = self._pro_api.daily_basic(
+                    trade_date=trade_date_text,
+                    fields=",".join(spec.raw_columns),
+                )
+            elif spec.dataset == "stock-st":
+                result = self._pro_api.stock_st(
+                    trade_date=trade_date_text,
+                    fields=",".join(spec.raw_columns),
+                )
+            elif spec.dataset == "stk-limit":
+                result = self._pro_api.stk_limit(
+                    trade_date=trade_date_text,
+                    fields=",".join(spec.raw_columns),
+                )
+            elif spec.dataset == "suspend-d":
+                result = self._pro_api.suspend_d(
                     trade_date=trade_date_text,
                     fields=",".join(spec.raw_columns),
                 )
@@ -236,6 +269,12 @@ class TushareSource:
             return self.fetch_daily_basic(task)
         if task.dataset == "stock-basic":
             return self.fetch_stock_basic(task)
+        if task.dataset == "stock-st":
+            return self.fetch_stock_st(task)
+        if task.dataset == "stk-limit":
+            return self.fetch_stk_limit(task)
+        if task.dataset == "suspend-d":
+            return self.fetch_suspend_d(task)
         raise NotImplementedError(f"暂未实现数据集: dataset={task.dataset}, source={task.source}")
 
     def load_raw(self, task: ETLTask) -> int:
@@ -291,6 +330,18 @@ class TushareSource:
         """拉取 Tushare 股票基础信息快照。"""
         return self._api().fetch_stock_basic()
 
+    def fetch_stock_st(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
+        """按本地交易日历逐日拉取 Tushare ST 股票列表原始数据。"""
+        return self._fetch_daily_dataset(task, TUSHARE_DAILY_FETCH_SPECS["stock-st"])
+
+    def fetch_stk_limit(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
+        """按本地交易日历逐日拉取 Tushare 涨跌停价格原始数据。"""
+        return self._fetch_daily_dataset(task, TUSHARE_DAILY_FETCH_SPECS["stk-limit"])
+
+    def fetch_suspend_d(self, task: ETLTask) -> Iterator[tuple[date, DataFrame]]:
+        """按本地交易日历逐日拉取 Tushare 停牌股票列表原始数据。"""
+        return self._fetch_daily_dataset(task, TUSHARE_DAILY_FETCH_SPECS["suspend-d"])
+
     def load_trade_calendar(self, task: ETLTask) -> int:
         """读取 Tushare 交易日历 raw CSV, 标准化后写入 DuckDB。"""
         raw_path = build_raw_path(self._config.paths.raw_dir, task)
@@ -308,12 +359,12 @@ class TushareSource:
         )
 
         # 交易日历以目标表为事实源, 同一范围重跑时直接覆盖旧数据。
-        if task.exchange:
-            delete_where = "exchange = ? AND cal_date BETWEEN ? AND ?"
-            delete_params: Sequence[Any] = [task.exchange.upper(), task.start_date, task.end_date]
-        else:
-            delete_where = "cal_date BETWEEN ? AND ?"
-            delete_params = [task.start_date, task.end_date]
+        delete_where = "exchange = ? AND cal_date BETWEEN ? AND ?"
+        delete_params: Sequence[Any] = [
+            TRADE_CALENDAR_EXCHANGE,
+            task.start_date,
+            task.end_date,
+        ]
 
         row_count = replace_table_dataframe(
             self._config.paths.database_path,
@@ -380,7 +431,7 @@ class TushareSource:
         logger.bind(module="etl").info(
             "开始拉取 Tushare {}: exchange={}, 开市日数量={}",
             spec.label,
-            task.exchange or "SSE",
+            TRADE_CALENDAR_EXCHANGE,
             len(trade_dates),
         )
 
@@ -465,7 +516,6 @@ def _load_open_trade_dates(config: QuantConfig, task: ETLTask) -> list[date]:
     if not database_path.is_file():
         raise ValueError(MISSING_TRADE_CALENDAR_MESSAGE)
 
-    exchange = (task.exchange or "SSE").upper()
     manager = DuckDBManager(database_path, config.paths.processed_dir)
     try:
         with manager.session() as conn:
@@ -473,7 +523,7 @@ def _load_open_trade_dates(config: QuantConfig, task: ETLTask) -> list[date]:
             trade_dates = repository.get_open_trade_dates(
                 task.start_date,
                 task.end_date,
-                exchange=exchange,
+                exchange=TRADE_CALENDAR_EXCHANGE,
             )
     except CatalogException as exc:
         raise ValueError(MISSING_TRADE_CALENDAR_MESSAGE) from exc

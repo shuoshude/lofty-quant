@@ -10,7 +10,14 @@ if TYPE_CHECKING:
     from quant.etl import ETLTask
 
 SINGLE_FILE_RAW_DATASETS = {"trade-calendar", "stock-basic"}
-DAILY_FILE_RAW_DATASETS = {"daily-ohlcv", "adj-factor", "daily-basic"}
+DAILY_FILE_RAW_DATASETS = {
+    "daily-ohlcv",
+    "adj-factor",
+    "daily-basic",
+    "stock-st",
+    "stk-limit",
+    "suspend-d",
+}
 
 
 def get_project_root(start: Path | None = None) -> Path:

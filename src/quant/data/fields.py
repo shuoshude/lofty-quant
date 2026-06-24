@@ -70,6 +70,20 @@ TUSHARE_STOCK_BASIC_RAW_COLUMNS = (
     "act_name",
     "act_ent_type",
 )
+TUSHARE_STOCK_ST_RAW_COLUMNS = ("ts_code", "name", "trade_date", "type", "type_name")
+TUSHARE_STK_LIMIT_RAW_COLUMNS = (
+    "trade_date",
+    "ts_code",
+    "pre_close",
+    "up_limit",
+    "down_limit",
+)
+TUSHARE_SUSPEND_D_RAW_COLUMNS = (
+    "ts_code",
+    "trade_date",
+    "suspend_timing",
+    "suspend_type",
+)
 
 SECURITY_COLUMNS = (
     "ts_code",

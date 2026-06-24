@@ -10,7 +10,10 @@ from quant.data.fields import (
     TUSHARE_ADJ_FACTOR_RAW_COLUMNS,
     TUSHARE_DAILY_BASIC_RAW_COLUMNS,
     TUSHARE_DAILY_OHLCV_RAW_COLUMNS,
+    TUSHARE_STK_LIMIT_RAW_COLUMNS,
     TUSHARE_STOCK_BASIC_RAW_COLUMNS,
+    TUSHARE_STOCK_ST_RAW_COLUMNS,
+    TUSHARE_SUSPEND_D_RAW_COLUMNS,
 )
 from quant.etl import ETLTask
 from quant.etl.fetch import write_raw_csv
@@ -49,7 +52,7 @@ def test_tushare_source_returns_dataframe(monkeypatch, tmp_path: Path) -> None:
         source="tushare",
         start_date=date(2024, 1, 1),
         end_date=date(2024, 1, 31),
-        exchange="SSE",
+        exchange="SZSE",
     )
 
     df = TushareSource(make_config(tmp_path, token="test-token")).fetch_raw(task)
@@ -391,6 +394,202 @@ def test_tushare_source_daily_basic_returns_empty_columns(
     df = frames_by_date[date(2024, 1, 2)]
     assert df.empty
     assert list(df.columns) == list(TUSHARE_DAILY_BASIC_RAW_COLUMNS)
+
+
+def test_tushare_source_fetches_stock_st_from_open_trade_dates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(
+        config,
+        [
+            ("SSE", date(2024, 1, 2), True, None),
+            ("SSE", date(2024, 1, 3), False, date(2024, 1, 2)),
+            ("SSE", date(2024, 1, 4), True, date(2024, 1, 2)),
+        ],
+    )
+    stock_st_calls: list[tuple[str, str]] = []
+    sleep_calls: list[str] = []
+
+    class FakeApi:
+        def stock_st(self, *, trade_date, fields):
+            stock_st_calls.append((trade_date, fields))
+            return pd.DataFrame(
+                [{"ts_code": "000001.SZ", "name": "平安银行", "trade_date": trade_date}]
+            )
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        tushare_source,
+        "_sleep_before_request",
+        lambda: sleep_calls.append("sleep"),
+    )
+
+    task = ETLTask(
+        dataset="stock-st",
+        source="tushare",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 4),
+        exchange="SSE",
+    )
+
+    frames_by_date = dict(TushareSource(config).fetch_stock_st(task))
+
+    expected_fields = ",".join(TUSHARE_STOCK_ST_RAW_COLUMNS)
+    assert stock_st_calls == [("20240102", expected_fields), ("20240104", expected_fields)]
+    assert sleep_calls == ["sleep", "sleep"]
+    assert list(frames_by_date) == [date(2024, 1, 2), date(2024, 1, 4)]
+
+
+def test_tushare_source_fetches_stk_limit_from_open_trade_dates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+    stk_limit_calls: list[tuple[str, str]] = []
+
+    class FakeApi:
+        def stk_limit(self, *, trade_date, fields):
+            stk_limit_calls.append((trade_date, fields))
+            return pd.DataFrame(
+                [{"ts_code": "000001.SZ", "trade_date": trade_date, "up_limit": 11.0}]
+            )
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    task = ETLTask(
+        dataset="stk-limit",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+
+    frames_by_date = dict(TushareSource(config).fetch_stk_limit(task))
+
+    assert stk_limit_calls == [("20240102", ",".join(TUSHARE_STK_LIMIT_RAW_COLUMNS))]
+    assert frames_by_date[date(2024, 1, 2)]["up_limit"].tolist() == [11.0]
+
+
+def test_tushare_source_fetches_suspend_d_from_open_trade_dates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+    suspend_d_calls: list[tuple[str, str]] = []
+
+    class FakeApi:
+        def suspend_d(self, *, trade_date, fields):
+            suspend_d_calls.append((trade_date, fields))
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": trade_date,
+                        "suspend_type": "S",
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    task = ETLTask(
+        dataset="suspend-d",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+
+    frames_by_date = dict(TushareSource(config).fetch_suspend_d(task))
+
+    assert suspend_d_calls == [("20240102", ",".join(TUSHARE_SUSPEND_D_RAW_COLUMNS))]
+    assert frames_by_date[date(2024, 1, 2)]["suspend_type"].tolist() == ["S"]
+
+
+def test_tushare_source_raw_only_daily_datasets_return_empty_columns(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+
+    class FakeApi:
+        def stock_st(self, *, trade_date, fields):
+            return pd.DataFrame()
+
+        def stk_limit(self, *, trade_date, fields):
+            return pd.DataFrame()
+
+        def suspend_d(self, *, trade_date, fields):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    source = TushareSource(config)
+    task = ETLTask(
+        dataset="stock-st",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+
+    assert list(dict(source.fetch_stock_st(task))[date(2024, 1, 2)].columns) == list(
+        TUSHARE_STOCK_ST_RAW_COLUMNS
+    )
+    assert list(
+        dict(source.fetch_stk_limit(task.model_copy(update={"dataset": "stk-limit"})))[
+            date(2024, 1, 2)
+        ].columns
+    ) == list(TUSHARE_STK_LIMIT_RAW_COLUMNS)
+    assert list(
+        dict(source.fetch_suspend_d(task.model_copy(update={"dataset": "suspend-d"})))[
+            date(2024, 1, 2)
+        ].columns
+    ) == list(TUSHARE_SUSPEND_D_RAW_COLUMNS)
+
+
+def test_tushare_source_skips_existing_raw_only_daily_before_request(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, token="test-token")
+    write_trade_calendar(config, [("SSE", date(2024, 1, 2), True, None)])
+    task = ETLTask(
+        dataset="stock-st",
+        source="tushare",
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 2),
+        exchange="SSE",
+    )
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240102"}]),
+    )
+
+    class FakeApi:
+        def stock_st(self, *, trade_date, fields):
+            raise AssertionError("已有 raw 时不应调用 Tushare stock_st 接口")
+
+    monkeypatch.setattr(tushare_source.ts, "set_token", lambda token: None)
+    monkeypatch.setattr(tushare_source.ts, "pro_api", lambda: FakeApi())
+    monkeypatch.setattr(tushare_source, "_sleep_before_request", lambda: None)
+
+    frames_by_date = dict(TushareSource(config).fetch_stock_st(task))
+
+    assert list(frames_by_date) == [date(2024, 1, 2)]
+    assert frames_by_date[date(2024, 1, 2)].empty
 
 
 def test_tushare_source_fetches_stock_basic_all_statuses(
