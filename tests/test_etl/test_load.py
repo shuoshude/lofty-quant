@@ -97,6 +97,54 @@ def test_replace_table_dataframe_initializes_duckdb_and_replaces_rows(tmp_path: 
     assert rows == [("000002.SZ", "万科A")]
 
 
+def test_replace_duckdb_dataframe_rolls_back_when_insert_fails(tmp_path: Path) -> None:
+    manager = DuckDBManager(tmp_path / "quant.duckdb", tmp_path / "processed")
+    manager.initialize()
+
+    with manager.session() as conn:
+        replace_duckdb_dataframe(
+            conn,
+            table="dim_security",
+            df=pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "symbol": "000001",
+                        "name": "平安银行",
+                        "exchange": "SZSE",
+                    }
+                ]
+            ),
+            columns=["ts_code", "symbol", "name", "exchange"],
+            delete_where="exchange = ?",
+            delete_params=["SZSE"],
+        )
+
+        with pytest.raises(KeyError):
+            replace_duckdb_dataframe(
+                conn,
+                table="dim_security",
+                df=pd.DataFrame(
+                    [
+                        {
+                            "ts_code": "000002.SZ",
+                            "symbol": "000002",
+                            "exchange": "SZSE",
+                        }
+                    ]
+                ),
+                columns=["ts_code", "symbol", "name", "exchange"],
+                delete_where="exchange = ?",
+                delete_params=["SZSE"],
+            )
+
+        rows = conn.execute(
+            "SELECT ts_code, name FROM dim_security ORDER BY ts_code"
+        ).fetchall()
+
+    assert rows == [("000001.SZ", "平安银行")]
+
+
 def test_replace_duckdb_dataframe_rejects_invalid_identifier(tmp_path: Path) -> None:
     manager = DuckDBManager(tmp_path / "quant.duckdb", tmp_path / "processed")
     manager.initialize()

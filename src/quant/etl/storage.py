@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -54,14 +55,18 @@ def replace_duckdb_dataframe(
     for column in columns:
         _validate_identifier(column)
 
-    conn.execute(f"DELETE FROM {table} WHERE {delete_where}", list(delete_params))
-    if df.empty:
-        return 0
-
-    selected_df = df.loc[:, list(columns)]
-    column_sql = ", ".join(columns)
+    registered = False
     try:
+        conn.execute("BEGIN TRANSACTION")
+        conn.execute(f"DELETE FROM {table} WHERE {delete_where}", list(delete_params))
+        if df.empty:
+            conn.execute("COMMIT")
+            return 0
+
+        selected_df = df.loc[:, list(columns)]
+        column_sql = ", ".join(columns)
         conn.register(TEMP_DATAFRAME_VIEW, selected_df)
+        registered = True
         conn.execute(
             f"""
             INSERT INTO {table} ({column_sql})
@@ -69,9 +74,16 @@ def replace_duckdb_dataframe(
             FROM {TEMP_DATAFRAME_VIEW}
             """
         )
+        conn.execute("COMMIT")
+        return len(selected_df.index)
+    except Exception:
+        with suppress(Exception):
+            conn.execute("ROLLBACK")
+        raise
     finally:
-        conn.unregister(TEMP_DATAFRAME_VIEW)
-    return len(selected_df.index)
+        if registered:
+            with suppress(Exception):
+                conn.unregister(TEMP_DATAFRAME_VIEW)
 
 
 def _validate_identifier(value: str) -> None:

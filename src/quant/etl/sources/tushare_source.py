@@ -216,7 +216,7 @@ class TushareSource:
         spec = TUSHARE_DAILY_LOAD_SPECS.get(dataset)
         if spec is None:
             raise NotImplementedError(f"暂未实现归档: dataset={dataset}, source=tushare")
-        return _archive_daily_dataset(self._config, year, spec)
+        return self._archive_daily_dataset(year, spec)
 
     def archive_daily_ohlcv_year(self, year: int) -> Path:
         """将某个已结束年份的月度日线 Parquet 归档为年文件。"""
@@ -287,15 +287,15 @@ class TushareSource:
 
     def load_daily_ohlcv(self, task: ETLTask) -> int:
         """读取 Tushare 日线 raw CSV, 标准化后写入月度 processed Parquet。"""
-        return _load_daily_dataset(self._config, task, TUSHARE_DAILY_LOAD_SPECS["daily-ohlcv"])
+        return self._load_daily_dataset(task, TUSHARE_DAILY_LOAD_SPECS["daily-ohlcv"])
 
     def load_adj_factor(self, task: ETLTask) -> int:
         """读取 Tushare 复权因子 raw CSV, 标准化后写入月度 processed Parquet。"""
-        return _load_daily_dataset(self._config, task, TUSHARE_DAILY_LOAD_SPECS["adj-factor"])
+        return self._load_daily_dataset(task, TUSHARE_DAILY_LOAD_SPECS["adj-factor"])
 
     def load_daily_basic(self, task: ETLTask) -> int:
         """读取 Tushare 每日指标 raw CSV, 标准化后写入月度 processed Parquet。"""
-        return _load_daily_dataset(self._config, task, TUSHARE_DAILY_LOAD_SPECS["daily-basic"])
+        return self._load_daily_dataset(task, TUSHARE_DAILY_LOAD_SPECS["daily-basic"])
 
     def _fetch_daily_dataset(
         self,
@@ -335,61 +335,55 @@ class TushareSource:
             len(trade_dates),
         )
 
+    def _load_daily_dataset(self, task: ETLTask, spec: TushareDailyLoadSpec) -> int:
+        """读取日频 raw CSV, 标准化后写入月度 processed Parquet。"""
+        raw_files = find_raw_files(self._config.paths.raw_dir, task)
+        if not raw_files:
+            raise FileNotFoundError(spec.missing_raw_message)
+
+        result = load_daily_raw_csv_to_monthly_parquet(
+            raw_files,
+            self._config.paths.processed_dir,
+            spec.processed_dataset,
+            read_frame=read_raw_csv,
+            normalize_frame=lambda raw_df: spec.normalize_frame(raw_df, task),
+            date_column="trade_date",
+            key_columns=["ts_code", "trade_date"],
+            columns=spec.processed_columns,
+            dry_run=task.dry_run,
+        )
+        for output_path, written_count in sorted(result.written_paths.items()):
+            logger.bind(module="etl").info(
+                "{} processed 月文件写入完成: 路径={}, 新增行数={}",
+                spec.label,
+                output_path,
+                written_count,
+            )
+
+        return result.row_count
+
+    def _archive_daily_dataset(self, year: int, spec: TushareDailyLoadSpec) -> Path:
+        """归档 Tushare 日频 processed 月文件为年文件。"""
+        year_path = archive_daily_year(
+            self._config.paths.processed_dir,
+            spec.processed_dataset,
+            year,
+            key_columns=["ts_code", "trade_date"],
+            columns=spec.processed_columns,
+        )
+        logger.bind(module="etl").info(
+            "{}年度归档完成: year={}, 路径={}",
+            spec.label,
+            year,
+            year_path,
+        )
+        return year_path
+
     def _api(self) -> _TushareApiClient:
         """懒加载 Tushare API 客户端, 避免离线 load/archive 依赖 token。"""
         if self._api_client is None:
             self._api_client = _TushareApiClient(self._config)
         return self._api_client
-
-
-def _load_daily_dataset(
-    config: QuantConfig,
-    task: ETLTask,
-    spec: TushareDailyLoadSpec,
-) -> int:
-    """读取日频 raw CSV, 标准化后写入月度 processed Parquet。"""
-    raw_files = find_raw_files(config.paths.raw_dir, task)
-    if not raw_files:
-        raise FileNotFoundError(spec.missing_raw_message)
-
-    result = load_daily_raw_csv_to_monthly_parquet(
-        raw_files,
-        config.paths.processed_dir,
-        spec.processed_dataset,
-        read_frame=read_raw_csv,
-        normalize_frame=lambda raw_df: spec.normalize_frame(raw_df, task),
-        date_column="trade_date",
-        key_columns=["ts_code", "trade_date"],
-        columns=spec.processed_columns,
-        dry_run=task.dry_run,
-    )
-    for output_path, written_count in sorted(result.written_paths.items()):
-        logger.bind(module="etl").info(
-            "{} processed 月文件写入完成: 路径={}, 新增行数={}",
-            spec.label,
-            output_path,
-            written_count,
-        )
-
-    return result.row_count
-
-
-def _archive_daily_dataset(config: QuantConfig, year: int, spec: TushareDailyLoadSpec) -> Path:
-    """归档 Tushare 日频 processed 月文件为年文件。"""
-    year_path = archive_daily_year(
-        config.paths.processed_dir,
-        spec.processed_dataset,
-        year,
-        key_columns=["ts_code", "trade_date"],
-        columns=spec.processed_columns,
-    )
-    logger.bind(module="etl").info(
-        "{}年度归档完成: year={}, 路径={}",
-        spec.label,
-        year,
-        year_path,
-    )
-    return year_path
 
 
 def _load_open_trade_dates(config: QuantConfig, task: ETLTask) -> list[date]:

@@ -1,4 +1,8 @@
-"""ETL 原始数据拉取和 raw CSV 落盘工具。"""
+"""ETL raw 拉取入口与 raw CSV 工具。
+
+当前文件同时保留 raw 拉取分发和 raw CSV 读写/查找工具。后续 source 增多或
+raw 工具继续增长时, 可以再拆出独立 raw.py, 避免提前增加文件层级。
+"""
 
 from __future__ import annotations
 
