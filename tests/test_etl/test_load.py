@@ -274,7 +274,7 @@ def test_load_daily_ohlcv_rejects_missing_auxiliary_raw(tmp_path: Path) -> None:
         write_auxiliary=False,
     )
 
-    with pytest.raises(FileNotFoundError, match="缺少 daily-ohlcv 辅助 raw 文件: dataset=stock-st"):
+    with pytest.raises(FileNotFoundError, match="缺少日频辅助 raw 文件: dataset=stock-st"):
         load_raw_data(config, daily_task(date(2024, 1, 2), date(2024, 1, 2)))
 
 
@@ -583,6 +583,7 @@ def test_load_daily_basic_rejects_missing_raw_and_invalid_rows(tmp_path: Path) -
         build_raw_path(config.paths.raw_dir, task),
         pd.DataFrame([{"ts_code": "000001.SZ"}]),
     )
+    write_daily_basic_auxiliary_raw(config, date(2024, 1, 2))
     with pytest.raises(ValueError, match="每日指标 raw 缺少字段"):
         load_raw_data(config, task)
 
@@ -606,11 +607,75 @@ def test_load_daily_basic_skips_empty_raw(tmp_path: Path) -> None:
         build_raw_path(config.paths.raw_dir, task),
         pd.DataFrame(columns=["ts_code", "trade_date"]),
     )
+    write_daily_basic_auxiliary_raw(config, date(2024, 1, 2))
 
     row_count = load_raw_data(config, task)
 
     assert row_count == 0
     assert not daily_basic_month_path(config, 2024, 1).exists()
+
+
+def test_load_daily_basic_appends_suspended_rows_from_previous_open_day(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 3))
+    write_daily_basic_raw(config, date(2024, 1, 2), ts_code="000002.SZ", pe="15.0")
+    write_daily_basic_raw(config, date(2024, 1, 3), ts_code="000001.SZ", pe="10.0")
+    write_daily_basic_auxiliary_raw(
+        config,
+        date(2024, 1, 3),
+        suspend_d_rows=[
+            {
+                "ts_code": "000002.SZ",
+                "trade_date": "20240103",
+                "suspend_timing": "",
+                "suspend_type": "S",
+            }
+        ],
+    )
+
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(daily_basic_month_path(config, 2024, 1)).sort_values(
+        ["trade_date", "ts_code"]
+    )
+    suspended_row = df[
+        (df["ts_code"] == "000002.SZ")
+        & (pd.to_datetime(df["trade_date"]).dt.date == date(2024, 1, 3))
+    ].iloc[0]
+
+    assert row_count == 3
+    assert pd.isna(suspended_row["close"])
+    assert pd.isna(suspended_row["turnover_rate"])
+    assert pd.isna(suspended_row["turnover_rate_f"])
+    assert pd.isna(suspended_row["volume_ratio"])
+    assert suspended_row["pe"] == 15.0
+    assert suspended_row["pe_ttm"] == 11.0
+    assert suspended_row["total_share"] == 100000.0
+
+
+def test_load_daily_basic_rejects_missing_suspended_previous_record(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
+    write_daily_basic_raw(config, date(2024, 1, 2), ts_code="000001.SZ")
+    write_daily_basic_auxiliary_raw(
+        config,
+        date(2024, 1, 2),
+        suspend_d_rows=[
+            {
+                "ts_code": "000002.SZ",
+                "trade_date": "20240102",
+                "suspend_timing": "",
+                "suspend_type": "S",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="无法补全每日指标停牌行"):
+        load_raw_data(config, task)
 
 
 def test_load_stock_basic_overwrites_dim_security(tmp_path: Path) -> None:
@@ -918,6 +983,7 @@ def write_daily_basic_raw(
     free_share: str = "60000.0",
     total_mv: str = "1000000.0",
     circ_mv: str = "800000.0",
+    write_auxiliary: bool = True,
 ) -> None:
     task = daily_basic_task(raw_date, raw_date)
     raw_path = build_raw_path(config.paths.raw_dir, task)
@@ -946,6 +1012,24 @@ def write_daily_basic_raw(
                     "circ_mv": circ_mv,
                 }
             ]
+        ),
+    )
+    if write_auxiliary:
+        write_daily_basic_auxiliary_raw(config, raw_date)
+
+
+def write_daily_basic_auxiliary_raw(
+    config: QuantConfig,
+    raw_date: date,
+    *,
+    suspend_d_rows: list[dict[str, object]] | None = None,
+) -> None:
+    task = daily_basic_task(raw_date, raw_date).model_copy(update={"dataset": "suspend-d"})
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame(
+            suspend_d_rows if suspend_d_rows is not None else [],
+            columns=["ts_code", "trade_date", "suspend_timing", "suspend_type"],
         ),
     )
 

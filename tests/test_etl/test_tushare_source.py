@@ -1038,6 +1038,86 @@ def test_normalize_daily_basic_df_normalizes_special_markers() -> None:
     assert loss_row["dv_ttm"] == 0.0
 
 
+def test_normalize_daily_basic_df_appends_full_day_suspension_rows() -> None:
+    normalized = normalize_daily_basic_df(
+        make_daily_basic_raw_df(ts_code="000001.SZ"),
+        make_daily_basic_task(),
+        suspend_d_df=pd.DataFrame(
+            [
+                {
+                    "ts_code": "000002.SZ",
+                    "trade_date": "20240102",
+                    "suspend_timing": "",
+                    "suspend_type": "S",
+                },
+                {
+                    "ts_code": "000003.SZ",
+                    "trade_date": "20240102",
+                    "suspend_timing": "",
+                    "suspend_type": "R",
+                },
+                {
+                    "ts_code": "000004.SZ",
+                    "trade_date": "20240102",
+                    "suspend_timing": "09:30-10:30",
+                    "suspend_type": "S",
+                },
+            ]
+        ),
+        previous_records={
+            "000002.SZ": {
+                "ts_code": "000002.SZ",
+                "trade_date": date(2024, 1, 1),
+                "close": 8.8,
+                "turnover_rate": 1.0,
+                "turnover_rate_f": 1.5,
+                "volume_ratio": 0.8,
+                "pe": 15.0,
+                "pe_ttm": 16.0,
+                "pb": 1.2,
+                "ps": 2.2,
+                "ps_ttm": 2.3,
+                "dv_ratio": 0.4,
+                "dv_ttm": 0.5,
+                "total_share": 200000.0,
+                "float_share": 160000.0,
+                "free_share": 120000.0,
+                "total_mv": 2000000.0,
+                "circ_mv": 1600000.0,
+            }
+        },
+    ).sort_values("ts_code")
+
+    assert normalized["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
+    suspended_row = normalized[normalized["ts_code"] == "000002.SZ"].iloc[0]
+    assert pd.isna(suspended_row["close"])
+    assert pd.isna(suspended_row["turnover_rate"])
+    assert pd.isna(suspended_row["turnover_rate_f"])
+    assert pd.isna(suspended_row["volume_ratio"])
+    assert suspended_row["pe"] == 15.0
+    assert suspended_row["pe_ttm"] == 16.0
+    assert suspended_row["total_share"] == 200000.0
+
+
+def test_normalize_daily_basic_df_rejects_missing_suspended_previous_record() -> None:
+    with pytest.raises(ValueError, match="无法补全每日指标停牌行"):
+        normalize_daily_basic_df(
+            make_daily_basic_raw_df(ts_code="000001.SZ"),
+            make_daily_basic_task(),
+            suspend_d_df=pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000002.SZ",
+                        "trade_date": "20240102",
+                        "suspend_timing": "",
+                        "suspend_type": "S",
+                    }
+                ]
+            ),
+            previous_records={},
+        )
+
+
 def test_normalize_daily_basic_df_logs_and_zeroes_anomaly_fields(monkeypatch) -> None:
     error_logs: list[tuple[str, tuple[object, ...]]] = []
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pandas as pd
@@ -103,11 +103,24 @@ def normalize_adj_factor_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     return _validate_adj_factor_contract(output.loc[:, list(ADJ_FACTOR_COLUMNS)])
 
 
-def normalize_daily_basic_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
+def normalize_daily_basic_df(
+    raw_df: DataFrame,
+    task: ETLTask,
+    *,
+    suspend_d_df: DataFrame | None = None,
+    previous_records: Mapping[str, Mapping[str, Any]] | None = None,
+) -> DataFrame:
     """将 Tushare 每日指标 raw DataFrame 转换为项目标准表结构。"""
     _require_daily_basic_columns(raw_df)
     if raw_df.empty:
-        return pd.DataFrame(columns=DAILY_BASIC_COLUMNS)
+        output = pd.DataFrame(columns=DAILY_BASIC_COLUMNS)
+        output = _append_daily_basic_suspended_rows(
+            output,
+            task,
+            suspend_d_df,
+            previous_records,
+        )
+        return _validate_daily_basic_contract(output.loc[:, list(DAILY_BASIC_COLUMNS)])
 
     output = pd.DataFrame(index=raw_df.index)
     output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
@@ -133,6 +146,7 @@ def normalize_daily_basic_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
         output[field_name] = output[field_name].fillna(0.0).mask(output[field_name] < 0, 0.0)
     _normalize_daily_basic_anomaly_fields(output)
 
+    output = _append_daily_basic_suspended_rows(output, task, suspend_d_df, previous_records)
     return _validate_daily_basic_contract(output.loc[:, list(DAILY_BASIC_COLUMNS)])
 
 
@@ -140,7 +154,7 @@ def _validate_daily_ohlcv_contract(df: DataFrame) -> DataFrame:
     """使用项目日线数据契约进行最终校验。"""
     errors: list[str] = []
     for row in df.to_dict(orient="records"):
-        row_data = {str(key): value for key, value in row.items()}
+        row_data = _to_validation_record(row)
         try:
             DailyOHLCVRecord(**row_data)
         except ValidationError as exc:
@@ -171,7 +185,7 @@ def _validate_adj_factor_contract(df: DataFrame) -> DataFrame:
     """使用项目复权因子契约进行最终校验。"""
     errors: list[str] = []
     for row in df.to_dict(orient="records"):
-        row_data = {str(key): value for key, value in row.items()}
+        row_data = _to_validation_record(row)
         try:
             AdjFactorRecord(**row_data)
         except ValidationError as exc:
@@ -202,7 +216,7 @@ def _validate_daily_basic_contract(df: DataFrame) -> DataFrame:
     """使用项目每日指标契约进行最终校验。"""
     errors: list[str] = []
     for row in df.to_dict(orient="records"):
-        row_data = {str(key): value for key, value in row.items()}
+        row_data = _to_validation_record(row)
         try:
             DailyBasicRecord(**row_data)
         except ValidationError as exc:
@@ -227,6 +241,18 @@ def _format_daily_basic_validation_error(row: dict[str, Any], exc: ValidationErr
         f"trade_date={row.get('trade_date', '-')}, "
         f"错误={', '.join(error_messages)}"
     )
+
+
+def _to_validation_record(row: Mapping[Any, Any]) -> dict[str, Any]:
+    """将 pandas 空值转为 None 后再交给 Pydantic 校验。"""
+    record: dict[str, Any] = {}
+    for key, value in row.items():
+        try:
+            is_missing = bool(pd.isna(value))
+        except (TypeError, ValueError):
+            is_missing = False
+        record[str(key)] = None if is_missing else value
+    return record
 
 
 def _normalize_daily_basic_anomaly_fields(df: DataFrame) -> None:
@@ -257,6 +283,74 @@ def _normalize_daily_basic_anomaly_fields(df: DataFrame) -> None:
             sample_rows,
         )
         df.loc[anomaly_mask, field_name] = 0.0
+
+
+def _append_daily_basic_suspended_rows(
+    output: DataFrame,
+    task: ETLTask,
+    suspend_d_df: DataFrame | None,
+    previous_records: Mapping[str, Mapping[str, Any]] | None,
+) -> DataFrame:
+    """根据 suspend-d 全天停牌记录补充或覆盖每日指标停牌行。"""
+    suspensions = _extract_full_day_suspensions(suspend_d_df, task)
+    if suspensions.empty:
+        return output.loc[:, list(DAILY_BASIC_COLUMNS)]
+
+    prepared = output.loc[:, list(DAILY_BASIC_COLUMNS)].copy()
+    previous_records = previous_records or {}
+    state_fields = {"close", "turnover_rate", "turnover_rate_f", "volume_ratio"}
+    carry_fields = [
+        field_name
+        for field_name in DAILY_BASIC_COLUMNS
+        if field_name not in {"ts_code", "trade_date", *state_fields}
+    ]
+    appended_rows: list[dict[str, Any]] = []
+    missing_previous: list[str] = []
+
+    for row in suspensions.to_dict(orient="records"):
+        ts_code = str(row["ts_code"])
+        trade_date = row["trade_date"]
+        previous = previous_records.get(ts_code)
+        if previous is None:
+            missing_previous.append(f"{ts_code}@{trade_date}")
+            continue
+
+        suspended_row = {
+            "ts_code": ts_code,
+            "trade_date": trade_date,
+            "close": None,
+            "turnover_rate": None,
+            "turnover_rate_f": None,
+            "volume_ratio": None,
+        }
+        for field_name in carry_fields:
+            suspended_row[field_name] = previous.get(field_name)
+
+        existing_mask = (prepared["ts_code"] == ts_code) & (prepared["trade_date"] == trade_date)
+        if existing_mask.any():
+            for field_name, value in suspended_row.items():
+                prepared.loc[existing_mask, field_name] = value
+            continue
+        appended_rows.append(suspended_row)
+
+    if missing_previous:
+        raise ValueError(
+            "无法补全每日指标停牌行, 缺少上一开市日数据: "
+            f"{missing_previous[:5]}"
+        )
+
+    if appended_rows:
+        appended_df = pd.DataFrame(appended_rows, columns=list(DAILY_BASIC_COLUMNS))
+        for column_name in prepared.columns:
+            try:
+                appended_df[column_name] = appended_df[column_name].astype(
+                    prepared[column_name].dtype
+                )
+            except (TypeError, ValueError):
+                continue
+        prepared = pd.concat([prepared, appended_df], ignore_index=True)
+
+    return prepared.loc[:, list(DAILY_BASIC_COLUMNS)]
 
 
 def _is_stock_st(ts_codes: pd.Series, stock_st_df: DataFrame | None) -> pd.Series:

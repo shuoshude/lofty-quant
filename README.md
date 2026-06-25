@@ -1,6 +1,6 @@
 # lofty-quant
 
-个人 A 股量化交易系统。已完成项目骨架、多层 TOML 配置、Loguru 日志,以及 `Tushare -> raw CSV -> DuckDB/Parquet` 的交易日历和日线行情轻量 ETL 链路(实测可拉取 13 年交易日历 + 4 年多全市场日线);因子、策略、回测等量化模块按实际使用逐步实现。
+个人 A 股量化交易系统。已完成项目骨架、多层 TOML 配置、Loguru 日志,以及 `Tushare -> raw CSV -> DuckDB/Parquet` 的交易日历、证券主数据、日线行情、复权因子、每日指标和 raw-only 辅助数据轻量 ETL 链路;因子、策略、回测等量化模块按实际使用逐步实现。
 
 ## 技术栈
 
@@ -32,13 +32,14 @@
 │   ├── logger.py                     # 统一日志配置
 │   ├── data/                         # DuckDB schema、数据契约和查询入口
 │   ├── etl/                          # 轻量 ETL(fetch/load/processed/storage)
-│   │   └── sources/tushare_source.py # Tushare 数据源适配器
+│   │   ├── processed.py              # 日频 processed Parquet 写入和归档
+│   │   └── sources/                  # Tushare 数据源适配器和字段标准化
 │   ├── features/                     # 因子工程(占位)
 │   ├── strategy/                     # 策略层(占位)
 │   ├── backtest/                     # 回测引擎(占位)
 │   ├── risk/                         # 风控模块(占位)
 │   └── analysis/                     # 分析输出(占位)
-├── tests/                            # 单元测试(87 个,覆盖率 94%)
+├── tests/                            # 单元测试(164 个,覆盖率 91%)
 └── lofty-quant-design.md             # 模块设计文档
 ```
 
@@ -131,7 +132,7 @@ etl_logger.info("ETL 任务启动")
 
 核心文件:
 
-- `src/quant/data/schemas.py`:Pydantic 数据契约,校验 `ts_code`、OHLC 价格区间、成交量、涨跌停状态等。日线 load 末尾会用 `DailyOHLCVRecord` 对每行做最终校验。
+- `src/quant/data/schemas.py`:Pydantic 数据契约。`DailyOHLCVRecord` 会区分停牌行和非停牌行校验交易状态;`DailyBasicRecord` 允许交易状态字段为空,停牌补全发生在 Tushare normalizer/load 阶段。
 - `src/quant/data/db.py`:DuckDB 连接和 schema 初始化,创建实体表并注册 Parquet 视图。
 - `src/quant/data/repository.py`:唯一公开查询入口,业务代码不要在其他模块直接写 SQL。
 
@@ -156,7 +157,7 @@ manager.initialize()
 - `dim_trade_calendar`:交易日历
 - `etl_manifest`:兼容保留的旧 ETL 状态表,当前业务流程不写入也不依赖它
 
-如果 `data/processed/` 下存在对应 Parquet 文件,还会自动注册视图:
+如果 `data/processed/` 下存在对应 Parquet 文件,还会自动注册视图。当前实际支持的日频研究视图包括 `v_daily_ohlcv`, `v_adj_factor`, `v_daily_basic`:
 
 ```text
 data/processed/ohlcv/         -> v_daily_ohlcv
@@ -187,16 +188,16 @@ data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet
 data/processed/ohlcv/year=2024/ohlcv_2024.parquet
 ```
 
-归档成功后会删除对应月文件,避免 DuckDB 视图重复读取同一批行情数据。其他数据集(复权因子、每日指标、指数行情、因子)按交易日期年月分区:
+归档成功后会删除对应月文件和空月份目录,避免 DuckDB 视图重复读取同一批日频数据。复权因子、每日指标等日频数据也先写月文件,已结束年份可通过 `archive` 合并为年文件:
 
 ```text
 data/processed/adj_factor/year=2024/month=01/adj_factor_202401.parquet
 data/processed/daily_basic/year=2024/month=01/daily_basic_202401.parquet
-data/processed/index_daily/year=2024/month=01/*.parquet
-data/processed/factors/year=2024/month=01/*.parquet
+data/processed/adj_factor/year=2024/adj_factor_2024.parquet
+data/processed/daily_basic/year=2024/daily_basic_2024.parquet
 ```
 
-财务数据按公告日期 `ann_date` 分区,避免回测时误用未来数据:
+指数行情、因子和财务数据目前保留视图约定,具体 ETL 后续按实际使用补齐。财务数据按公告日期 `ann_date` 分区,避免回测时误用未来数据:
 
 ```text
 data/processed/fundamental/year=2024/month=04/*.parquet
@@ -254,90 +255,26 @@ ETL 分为两个阶段:
 
 阶段命令可以独立执行。ETL 使用 Tushare `SSE` 交易日历作为本地统一 A 股开闭市日历,脚本入口不再暴露交易所参数。
 
-```bash
-uv run python scripts/run_etl.py fetch trade-calendar \
-  --source tushare \
-  --start-date 20240101 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py load trade-calendar \
-  --source tushare \
-  --start-date 20240101 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py fetch daily-ohlcv \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py load daily-ohlcv \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py fetch adj-factor \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py load adj-factor \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py fetch daily-basic \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py load daily-basic \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py fetch stock-st \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py fetch stk-limit \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py fetch suspend-d \
-  --source tushare \
-  --start-date 20240102 \
-  --end-date 20240131
-
-uv run python scripts/run_etl.py fetch stock-basic \
-  --source tushare
-
-uv run python scripts/run_etl.py load stock-basic \
-  --source tushare
-```
-
-生命周期命令负责编排阶段:
+推荐按依赖顺序准备数据:
 
 ```bash
-uv run python scripts/run_etl.py backfill trade-calendar \
-  --source tushare \
-  --start-date 20130101 \
-  --end-date 20260617
+uv run python scripts/run_etl.py fetch trade-calendar --source tushare --start-date 20130101 --end-date 20260630
+uv run python scripts/run_etl.py load trade-calendar --source tushare --start-date 20130101 --end-date 20260630
 
-uv run python scripts/run_etl.py status trade-calendar --source tushare
+uv run python scripts/run_etl.py fetch stock-basic --source tushare
+uv run python scripts/run_etl.py load stock-basic --source tushare
 
-uv run python scripts/run_etl.py status daily-ohlcv --source tushare
+uv run python scripts/run_etl.py fetch daily-ohlcv --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py fetch stock-st --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py fetch stk-limit --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py fetch suspend-d --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py load daily-ohlcv --source tushare --start-date 20240102 --end-date 20240131
 
-uv run python scripts/run_etl.py status adj-factor --source tushare
+uv run python scripts/run_etl.py fetch adj-factor --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py load adj-factor --source tushare --start-date 20240102 --end-date 20240131
 
-uv run python scripts/run_etl.py status daily-basic --source tushare
-
-uv run python scripts/run_etl.py status stock-basic --source tushare
-
-uv run python scripts/run_etl.py archive daily-ohlcv \
-  --source tushare \
-  --year 2023
+uv run python scripts/run_etl.py fetch daily-basic --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py load daily-basic --source tushare --start-date 20240102 --end-date 20240131
 ```
 
 生命周期约定:
@@ -345,17 +282,35 @@ uv run python scripts/run_etl.py archive daily-ohlcv \
 - `fetch`:只连接外部数据源,只写 `data/raw`,不写 DuckDB,不写 processed。
 - `load`:只读取 `data/raw`,清洗转换后写 DuckDB 或 processed。
 - `backfill`:历史回填,按 `fetch -> load` 执行。除 `stock-basic` 这类快照型数据集外,通常需要显式传入日期范围。
-- `archive`:将已结束年份的日线行情月文件合并为年文件,并删除对应月文件。
+- `archive`:将已结束年份的日频月文件合并为年文件,并删除对应月文件和空月份目录。
 - `status`:直接从目标表或 processed 数据实时聚合当前真实状态。
 
 ### 已支持的数据集
 
-- **trade-calendar + tushare**:拉取 Tushare 交易日历,保存 raw CSV,加载到 DuckDB `dim_trade_calendar`,并通过 `status` 查询目标表真实状态。
-- **daily-ohlcv + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare 日线接口,每个交易日保存一个 raw CSV;load 时会同时读取同日 `stock-st`, `stk-limit`, `suspend-d` raw 来生成 ST、停牌和涨跌停状态,再写入月度 processed Parquet;已结束年份可归档为年度 Parquet。
-- **adj-factor + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `adj_factor` 接口,每个交易日保存一个 raw CSV;load 时把 Tushare `adj_factor` 标准化为项目字段 `cumulative_factor`,再写入月度 processed Parquet。
-- **daily-basic + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `daily_basic` 接口,每个交易日保存一个 raw CSV;load 时按 Tushare 官方每日指标字段约定标准化并做 Pydantic 契约校验,再写入月度 processed Parquet。
-- **stock-basic + tushare**:依次拉取 Tushare `stock_basic(list_status="L/D/P")`,合并为单个 raw CSV;load 时按接口字段选择列并全量覆盖 DuckDB `dim_security`,不做派生字段和契约校验。
-- **stock-st / stk-limit / suspend-d + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `stock_st`, `stk_limit`, `suspend_d` 接口,只保存 raw CSV;不做 load、processed、DuckDB 视图或数据契约校验。
+| dataset | fetch | load | archive | status | raw | processed / target |
+| --- | --- | --- | --- | --- | --- | --- |
+| `trade-calendar` | 支持 | 支持 | 不适用 | 支持 | 单文件 CSV | DuckDB `dim_trade_calendar` |
+| `stock-basic` | 支持 | 支持 | 不适用 | 支持 | 单文件 CSV | DuckDB `dim_security` |
+| `daily-ohlcv` | 支持 | 支持 | 支持 | 支持 | 每交易日 CSV | `data/processed/ohlcv` |
+| `adj-factor` | 支持 | 支持 | 支持 | 支持 | 每交易日 CSV | `data/processed/adj_factor` |
+| `daily-basic` | 支持 | 支持 | 支持 | 支持 | 每交易日 CSV | `data/processed/daily_basic` |
+| `stock-st` | 支持 | 不支持 | 不支持 | 不支持 | 每交易日 CSV | raw-only |
+| `stk-limit` | 支持 | 不支持 | 不支持 | 不支持 | 每交易日 CSV | raw-only |
+| `suspend-d` | 支持 | 不支持 | 不支持 | 不支持 | 每交易日 CSV | raw-only |
+
+常用状态和归档命令:
+
+```bash
+uv run python scripts/run_etl.py status trade-calendar --source tushare
+uv run python scripts/run_etl.py status stock-basic --source tushare
+uv run python scripts/run_etl.py status daily-ohlcv --source tushare
+uv run python scripts/run_etl.py status adj-factor --source tushare
+uv run python scripts/run_etl.py status daily-basic --source tushare
+
+uv run python scripts/run_etl.py archive daily-ohlcv --source tushare --year 2023
+uv run python scripts/run_etl.py archive adj-factor --source tushare --year 2023
+uv run python scripts/run_etl.py archive daily-basic --source tushare --year 2023
+```
 
 ### raw 层约定
 
@@ -408,7 +363,7 @@ data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet   # 月文件
 data/processed/ohlcv/year=2024/ohlcv_2024.parquet              # 年文件(归档后)
 ```
 
-`load daily-ohlcv` 永远先写月文件;如果同一月文件已存在,会读取旧文件和新 raw 合并,并按 `(ts_code, trade_date)` 去重,新数据覆盖旧数据。执行 load 前必须先准备同日期的 `daily-ohlcv`, `stock-st`, `stk-limit`, `suspend-d` raw;缺少任一辅助 raw 会直接失败。推荐顺序:
+`load daily-ohlcv` 永远先写月文件;如果同一月文件已存在,会读取旧文件和新 raw 合并,并按 `(ts_code, trade_date)` 去重,新数据覆盖旧数据。执行 load 前必须先准备同日期的 `daily-ohlcv`, `stock-st`, `stk-limit`, `suspend-d` raw;缺少任一辅助 raw 会直接失败。
 
 ```bash
 uv run python scripts/run_etl.py fetch daily-ohlcv --source tushare --start-date 20240102 --end-date 20240131
@@ -418,7 +373,13 @@ uv run python scripts/run_etl.py fetch suspend-d --source tushare --start-date 2
 uv run python scripts/run_etl.py load daily-ohlcv --source tushare --start-date 20240102 --end-date 20240131
 ```
 
-`limit_status` 使用整数编码:`-1=全天停牌`, `0=收盘平盘`, `1=上涨(不含涨停)`, `2=涨停`, `3=下跌(不含跌停)`, `4=跌停`。`is_suspended` 表示全天停牌;`suspend-d` 中 `suspend_type=R` 或 `suspend_timing` 非空的日内临停不会补全天停牌行。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份,会把该年份月文件合并到年文件,写入成功后删除月文件。不要长期同时保留同一年份的月文件和年文件,否则递归读取时会重复统计。
+状态字段来源:
+
+- `stock-st`:生成 `is_st`
+- `stk-limit`:结合开收盘价计算 `limit_status`
+- `suspend-d`:补全天停牌行并设置 `is_suspended=True`, `limit_status=-1`
+
+`limit_status` 使用整数编码:`-1=全天停牌`, `0=收盘平盘`, `1=上涨(不含涨停)`, `2=涨停`, `3=下跌(不含跌停)`, `4=跌停`。`suspend-d` 中 `suspend_type=R` 或 `suspend_timing` 非空的日内临停不会补全天停牌行。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份,会把该年份月文件合并到年文件,写入成功后删除月文件和空月份目录。不要长期同时保留同一年份的月文件和年文件,否则递归读取时会重复统计。
 
 ### 复权因子 processed 层约定
 
@@ -427,6 +388,8 @@ data/processed/adj_factor/year=2024/month=01/adj_factor_202401.parquet
 ```
 
 processed 标准字段固定为 `ts_code`, `trade_date`, `cumulative_factor`。raw 层保留 Tushare 原始字段 `adj_factor`,load 阶段再映射为项目内部标准字段,避免后续 Repository 和回测直接依赖某个数据源的字段含义。
+
+复权因子按月写入 processed Parquet,已结束年份可通过 `archive adj-factor --year YYYY` 合并为年度文件。Tushare `adj_factor` raw 已包含全天停牌股票,load 阶段不做停牌补行。
 
 ### 每日指标 processed 层约定
 
@@ -437,6 +400,8 @@ data/processed/daily_basic/year=2024/month=01/daily_basic_202401.parquet
 processed 标准字段对齐 Tushare `daily_basic` 官方文档,包括 `close`, `turnover_rate`, `turnover_rate_f`, `volume_ratio`, `pe`, `pe_ttm`, `pb`, `ps`, `ps_ttm`, `dv_ratio`, `dv_ttm`, `total_share`, `float_share`, `free_share`, `total_mv`, `circ_mv`。其中股本单位为万股,市值单位为万元。
 
 raw 层保留 Tushare 原始返回;load 到 processed 时会做项目语义归一化:`pe` 和 `pe_ttm` 空值表示亏损,入库为 `-1`;`volume_ratio` 空值或负标记表示上市不足五日导致量比为空,入库为 `0`;`dv_ratio` 和 `dv_ttm` 空值或负标记表示未发生派息或股息率为 0,入库为 `0`。`turnover_rate`, `turnover_rate_f`, `total_share`, `free_share`, `float_share`, `total_mv`, `circ_mv` 为空、为 0 或为负数时视为原始数据异常,load 时入库为 `0`,并记录 error 日志用于后续排查。
+
+`daily-basic` load 前需要准备同日期的 `suspend-d` raw。对于 `suspend-d` 中 `suspend_type=S` 且 `suspend_timing` 为空的全天停牌股票,如果当日 `daily_basic` raw 缺少该股票,load 会补一行: `close`, `turnover_rate`, `turnover_rate_f`, `volume_ratio` 置空;`pe`, `pe_ttm`, `pb`, `ps`, `ps_ttm`, `dv_ratio`, `dv_ttm`, `total_share`, `float_share`, `free_share`, `total_mv`, `circ_mv` 沿用上一开市日已标准化记录。缺少上一开市日记录时会直接报错,避免生成不可追溯的指标。已结束年份可通过 `archive daily-basic --year YYYY` 归档为年度文件。
 
 ### 数据状态查询
 
@@ -484,12 +449,16 @@ uv run mypy src/
 - Repository 查询入口(日线、截面、因子、交易日历、开市日)
 - 轻量 ETL 入口(fetch / load / backfill / archive / status)
 - Tushare 交易日历 fetch / load / status 完整链路
-- Tushare 日线行情 raw fetch(生成器边拉边写 + 断点续传)、月度 load、年度 archive、status
-- 基础测试覆盖(87 个测试,覆盖率 94%)
+- Tushare 股票基础信息 fetch / load / status 完整链路
+- Tushare 日线行情 fetch / load / archive / status,支持 ST、涨跌停和全天停牌状态字段
+- Tushare 复权因子 fetch / load / archive / status
+- Tushare 每日指标 fetch / load / archive / status,支持基于 `suspend-d` 的全天停牌补行
+- Tushare `stock-st`, `stk-limit`, `suspend-d` raw-only 日频辅助数据 fetch
+- 基础测试覆盖(164 个测试,覆盖率 91%)
 
 待实现:
 
-- 每日指标、指数日线等更多数据集的 Tushare 适配
+- 指数日线等更多数据集的 Tushare 适配
 - AkShare、MiniQMT 等更多数据源适配
 - 日线行情缺失交易日检查和补数辅助命令
 - 技术指标和因子 pipeline
