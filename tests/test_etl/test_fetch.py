@@ -5,8 +5,8 @@ import pandas as pd
 
 from quant.config import load_config
 from quant.etl import ETLTask
-from quant.etl.fetch import (
-    fetch_raw_data,
+from quant.etl.fetch import fetch_raw_data
+from quant.etl.raw import (
     find_raw_files,
     read_raw_csv,
     write_raw_csv,

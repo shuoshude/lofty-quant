@@ -32,8 +32,8 @@ from quant.data.fields import (
 )
 from quant.data.repository import QuantRepository
 from quant.etl.etl_model import ETLTask
-from quant.etl.fetch import find_raw_files, read_raw_csv
 from quant.etl.processed import archive_daily_year, load_daily_raw_csv_to_monthly_parquet
+from quant.etl.raw import find_raw_files, read_raw_csv
 from quant.etl.sources.tushare_normalizers import (
     normalize_adj_factor_df,
     normalize_daily_basic_df,

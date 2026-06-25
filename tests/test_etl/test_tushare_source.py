@@ -16,7 +16,7 @@ from quant.data.fields import (
     TUSHARE_SUSPEND_D_RAW_COLUMNS,
 )
 from quant.etl import ETLTask
-from quant.etl.fetch import write_raw_csv
+from quant.etl.raw import write_raw_csv
 from quant.etl.sources import tushare_normalizers, tushare_source
 from quant.etl.sources.tushare_normalizers import (
     normalize_adj_factor_df,

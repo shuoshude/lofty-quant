@@ -7,8 +7,8 @@ import pytest
 from quant.config import PathsConfig, ProjectConfig, QuantConfig, SecretsSettings
 from quant.data.db import DuckDBManager
 from quant.etl import ETLTask
-from quant.etl.fetch import write_raw_csv
 from quant.etl.load import load_raw_data
+from quant.etl.raw import write_raw_csv
 from quant.etl.sources.tushare_source import TushareSource
 from quant.etl.storage import replace_duckdb_dataframe, replace_table_dataframe
 from quant.utils import build_raw_path

@@ -1,8 +1,4 @@
-"""ETL raw 拉取入口与 raw CSV 工具。
-
-当前文件同时保留 raw 拉取分发和 raw CSV 读写/查找工具。后续 source 增多或
-raw 工具继续增长时, 可以再拆出独立 raw.py, 避免提前增加文件层级。
-"""
+"""ETL raw 拉取入口。"""
 
 from __future__ import annotations
 
@@ -10,56 +6,16 @@ from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
 from loguru import logger
 from pandas import DataFrame
 
 from quant.config import QuantConfig
 from quant.etl.etl_model import ETLTask
-from quant.utils import (
-    build_raw_path,
-    is_daily_file_raw_dataset,
-    is_single_file_raw_dataset,
-    iter_raw_partition_dirs,
-    parse_daily_raw_file_date,
-)
+from quant.etl.raw import write_raw_csv
+from quant.utils import build_raw_path, is_single_file_raw_dataset
 
 DailyRawFrames = Iterable[tuple[date, DataFrame]]
 RawFetchResult = DataFrame | DailyRawFrames
-
-
-def write_raw_csv(path: Path, df: DataFrame) -> int:
-    """将 DataFrame 写入 raw CSV 并返回行数。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False, encoding="utf-8")
-    return len(df.index)
-
-
-def read_raw_csv(path: Path) -> DataFrame:
-    """读取 raw CSV 为 DataFrame。"""
-    return pd.read_csv(path, encoding="utf-8", dtype=str, keep_default_na=False)
-
-
-def find_raw_files(raw_dir: Path, task: ETLTask, *, suffix: str = "csv") -> list[Path]:
-    """查找任务范围内可能相关的 raw CSV 文件。"""
-    if is_single_file_raw_dataset(task):
-        path = build_raw_path(raw_dir, task, suffix=suffix)
-        return [path] if path.is_file() else []
-
-    files: list[Path] = []
-    pattern = f"*.{suffix.lstrip('.')}"
-    for partition_dir in iter_raw_partition_dirs(raw_dir, task):
-        if partition_dir.exists():
-            files.extend(partition_dir.glob(pattern))
-
-    existing_files = sorted(path for path in files if path.is_file())
-    if is_daily_file_raw_dataset(task):
-        return [
-            path
-            for path in existing_files
-            if _is_daily_raw_file_in_range(path, task)
-        ]
-    return existing_files
 
 
 def fetch_raw_data(config: QuantConfig, task: ETLTask) -> tuple[Path, ...]:
@@ -129,9 +85,3 @@ def _fetch_tushare_raw(config: QuantConfig, task: ETLTask) -> RawFetchResult:
     from quant.etl.sources.tushare_source import TushareSource
 
     return TushareSource(config).fetch_raw(task)
-
-
-def _is_daily_raw_file_in_range(path: Path, task: ETLTask) -> bool:
-    """判断日线 raw 文件名中的交易日是否落在任务范围内。"""
-    file_date = parse_daily_raw_file_date(path, task)
-    return file_date is not None and task.start_date <= file_date <= task.end_date
