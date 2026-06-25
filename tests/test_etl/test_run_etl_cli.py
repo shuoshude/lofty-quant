@@ -9,6 +9,8 @@ import pandas as pd
 from typer.testing import CliRunner
 
 from quant.config import load_config
+from quant.data.db import DuckDBManager
+from quant.etl.inspector import MissingDateResult, get_dataset_status
 from quant.logger import setup_logger
 
 
@@ -414,7 +416,9 @@ def test_status_command_reads_trade_calendar_table(monkeypatch, tmp_path: Path) 
     run_etl = load_run_etl_module()
     config_dir = make_config_dir(tmp_path)
 
-    def fake_status(conn):
+    def fake_status(_config, dataset, *, source=None):
+        assert dataset == "trade-calendar"
+        assert source == "tushare"
         return {
             "exchange": "SSE",
             "start_date": "2024-01-01",
@@ -423,7 +427,7 @@ def test_status_command_reads_trade_calendar_table(monkeypatch, tmp_path: Path) 
             "open_count": 22,
         }
 
-    monkeypatch.setattr(run_etl, "_get_trade_calendar_status", fake_status)
+    monkeypatch.setattr(run_etl, "get_dataset_status", fake_status)
 
     result = CliRunner().invoke(
         run_etl.app,
@@ -449,7 +453,9 @@ def test_status_command_reads_daily_ohlcv_processed_state(monkeypatch, tmp_path:
     run_etl = load_run_etl_module()
     config_dir = make_config_dir(tmp_path)
 
-    def fake_status(config):
+    def fake_status(_config, dataset, *, source=None):
+        assert dataset == "daily-ohlcv"
+        assert source == "tushare"
         return {
             "start_date": "2024-01-02",
             "end_date": "2024-01-31",
@@ -458,7 +464,7 @@ def test_status_command_reads_daily_ohlcv_processed_state(monkeypatch, tmp_path:
             "security_count": 5,
         }
 
-    monkeypatch.setattr(run_etl, "_get_daily_ohlcv_status", fake_status)
+    monkeypatch.setattr(run_etl, "get_dataset_status", fake_status)
 
     result = CliRunner().invoke(
         run_etl.app,
@@ -483,7 +489,9 @@ def test_status_command_reads_adj_factor_processed_state(monkeypatch, tmp_path: 
     run_etl = load_run_etl_module()
     config_dir = make_config_dir(tmp_path)
 
-    def fake_status(config):
+    def fake_status(_config, dataset, *, source=None):
+        assert dataset == "adj-factor"
+        assert source == "tushare"
         return {
             "start_date": "2024-01-02",
             "end_date": "2024-01-31",
@@ -492,7 +500,7 @@ def test_status_command_reads_adj_factor_processed_state(monkeypatch, tmp_path: 
             "security_count": 5,
         }
 
-    monkeypatch.setattr(run_etl, "_get_adj_factor_status", fake_status)
+    monkeypatch.setattr(run_etl, "get_dataset_status", fake_status)
 
     result = CliRunner().invoke(
         run_etl.app,
@@ -517,7 +525,9 @@ def test_status_command_reads_daily_basic_processed_state(monkeypatch, tmp_path:
     run_etl = load_run_etl_module()
     config_dir = make_config_dir(tmp_path)
 
-    def fake_status(config):
+    def fake_status(_config, dataset, *, source=None):
+        assert dataset == "daily-basic"
+        assert source == "tushare"
         return {
             "start_date": "2024-01-02",
             "end_date": "2024-01-31",
@@ -526,7 +536,7 @@ def test_status_command_reads_daily_basic_processed_state(monkeypatch, tmp_path:
             "security_count": 5,
         }
 
-    monkeypatch.setattr(run_etl, "_get_daily_basic_status", fake_status)
+    monkeypatch.setattr(run_etl, "get_dataset_status", fake_status)
 
     result = CliRunner().invoke(
         run_etl.app,
@@ -551,7 +561,9 @@ def test_status_command_reads_stock_basic_table(monkeypatch, tmp_path: Path) -> 
     run_etl = load_run_etl_module()
     config_dir = make_config_dir(tmp_path)
 
-    def fake_status(conn):
+    def fake_status(_config, dataset, *, source=None):
+        assert dataset == "stock-basic"
+        assert source == "tushare"
         return {
             "row_count": 5000,
             "exchange_count": 3,
@@ -560,7 +572,7 @@ def test_status_command_reads_stock_basic_table(monkeypatch, tmp_path: Path) -> 
             "paused_count": 20,
         }
 
-    monkeypatch.setattr(run_etl, "_get_stock_basic_status", fake_status)
+    monkeypatch.setattr(run_etl, "get_dataset_status", fake_status)
 
     result = CliRunner().invoke(
         run_etl.app,
@@ -583,8 +595,89 @@ def test_status_command_reads_stock_basic_table(monkeypatch, tmp_path: Path) -> 
     assert "暂停上市数量: 20" in result.output
 
 
-def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
+def test_missing_command_prints_missing_dates(monkeypatch, tmp_path: Path) -> None:
     run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+    calls: list[str] = []
+
+    def fake_missing(_config, task):
+        calls.append(f"{task.dataset}:{task.source}:{task.start_date}:{task.end_date}")
+        return MissingDateResult(
+            dataset=task.dataset,
+            source=task.source,
+            start_date=task.start_date,
+            end_date=task.end_date,
+            expected_dates=(date(2024, 1, 2), date(2024, 1, 3)),
+            existing_dates=(date(2024, 1, 2),),
+            missing_dates=(date(2024, 1, 3),),
+        )
+
+    monkeypatch.setattr(run_etl, "find_missing_dates", fake_missing)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "missing",
+            "daily-ohlcv",
+            "--source",
+            "tushare",
+            "--start-date",
+            "20240102",
+            "--end-date",
+            "20240103",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["daily-ohlcv:tushare:2024-01-02:2024-01-03"]
+    assert "数据集: daily-ohlcv" in result.output
+    assert "应有日期数: 2" in result.output
+    assert "已有日期数: 1" in result.output
+    assert "缺失日期数: 1" in result.output
+    assert "2024-01-03" in result.output
+
+
+def test_missing_command_prints_no_missing_dates(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+
+    def fake_missing(_config, task):
+        return MissingDateResult(
+            dataset=task.dataset,
+            source=task.source,
+            start_date=task.start_date,
+            end_date=task.end_date,
+            expected_dates=(date(2024, 1, 2),),
+            existing_dates=(date(2024, 1, 2),),
+            missing_dates=(),
+        )
+
+    monkeypatch.setattr(run_etl, "find_missing_dates", fake_missing)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "missing",
+            "stock-st",
+            "--source",
+            "tushare",
+            "--start-date",
+            "20240102",
+            "--end-date",
+            "20240102",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "缺失日期数: 0" in result.output
+    assert "缺失日期: 无" in result.output
+
+
+def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
     config = load_config(config_dir=make_config_dir(tmp_path))
     parquet_path = (
         config.paths.processed_dir
@@ -602,7 +695,7 @@ def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
         ]
     ).to_parquet(parquet_path, index=False)
 
-    state = run_etl._get_daily_ohlcv_status(config)
+    state = get_dataset_status(config, "daily-ohlcv", source="tushare")
 
     assert state["start_date"] == date(2024, 1, 2)
     assert state["end_date"] == date(2024, 1, 3)
@@ -612,10 +705,9 @@ def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:
 
 
 def test_daily_basic_status_reads_processed_view(tmp_path: Path) -> None:
-    run_etl = load_run_etl_module()
     config = load_config(config_dir=make_config_dir(tmp_path))
 
-    empty_state = run_etl._get_daily_basic_status(config)
+    empty_state = get_dataset_status(config, "daily-basic", source="tushare")
 
     assert empty_state["row_count"] == 0
 
@@ -635,7 +727,7 @@ def test_daily_basic_status_reads_processed_view(tmp_path: Path) -> None:
         ]
     ).to_parquet(parquet_path, index=False)
 
-    state = run_etl._get_daily_basic_status(config)
+    state = get_dataset_status(config, "daily-basic", source="tushare")
 
     assert state["start_date"] == date(2024, 1, 2)
     assert state["end_date"] == date(2024, 1, 3)
@@ -645,7 +737,6 @@ def test_daily_basic_status_reads_processed_view(tmp_path: Path) -> None:
 
 
 def test_adj_factor_status_reads_processed_view(tmp_path: Path) -> None:
-    run_etl = load_run_etl_module()
     config = load_config(config_dir=make_config_dir(tmp_path))
     parquet_path = (
         config.paths.processed_dir
@@ -663,7 +754,7 @@ def test_adj_factor_status_reads_processed_view(tmp_path: Path) -> None:
         ]
     ).to_parquet(parquet_path, index=False)
 
-    state = run_etl._get_adj_factor_status(config)
+    state = get_dataset_status(config, "adj-factor", source="tushare")
 
     assert state["start_date"] == date(2024, 1, 2)
     assert state["end_date"] == date(2024, 1, 3)
@@ -673,9 +764,8 @@ def test_adj_factor_status_reads_processed_view(tmp_path: Path) -> None:
 
 
 def test_stock_basic_status_reads_dim_security(tmp_path: Path) -> None:
-    run_etl = load_run_etl_module()
     config = load_config(config_dir=make_config_dir(tmp_path))
-    manager = run_etl.DuckDBManager(config.paths.database_path, config.paths.processed_dir)
+    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
     manager.initialize()
     with manager.session() as conn:
         conn.executemany(
@@ -689,7 +779,7 @@ def test_stock_basic_status_reads_dim_security(tmp_path: Path) -> None:
                 ("600000.SH", "600000", "浦发银行", "SSE", "P"),
             ],
         )
-        state = run_etl._get_stock_basic_status(conn)
+    state = get_dataset_status(config, "stock-basic", source="tushare")
 
     assert state["row_count"] == 3
     assert state["exchange_count"] == 2

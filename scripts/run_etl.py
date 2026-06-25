@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Annotated
 
 import typer
-from duckdb import DuckDBPyConnection
 from loguru import logger
 
 from quant.config import QuantConfig, load_config
-from quant.data.db import DuckDBManager
 from quant.etl import ETLTask, fetch_raw_data, load_raw_data
+from quant.etl.inspector import find_missing_dates, get_dataset_status
 from quant.logger import setup_logger
 
 app = typer.Typer(help="lofty-quant ETL 轻量入口")
@@ -144,15 +141,18 @@ def status(
 ) -> None:
     """查看目标数据真实状态。"""
     config = _setup_runtime(config_dir, environment, log_level)
+    try:
+        state = get_dataset_status(config, dataset, source=source)
+    except (FileNotFoundError, NotImplementedError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    logger.bind(module="etl").info(
+        "目标数据状态查询完成: dataset={}, source={}, row_count={}",
+        dataset,
+        source or "*",
+        state["row_count"],
+    )
     if dataset == "trade-calendar":
-        with _status_session(config) as conn:
-            state = _get_trade_calendar_status(conn)
-        logger.bind(module="etl").info(
-            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
-            dataset,
-            source or "*",
-            state["row_count"],
-        )
         typer.echo(f"数据集: {dataset}")
         typer.echo(f"数据源: {source or '*'}")
         typer.echo(f"交易所: {state['exchange']}")
@@ -163,13 +163,6 @@ def status(
         return
 
     if dataset == "daily-ohlcv":
-        state = _get_daily_ohlcv_status(config)
-        logger.bind(module="etl").info(
-            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
-            dataset,
-            source or "*",
-            state["row_count"],
-        )
         typer.echo(f"数据集: {dataset}")
         typer.echo(f"数据源: {source or '*'}")
         typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
@@ -180,13 +173,6 @@ def status(
         return
 
     if dataset == "adj-factor":
-        state = _get_adj_factor_status(config)
-        logger.bind(module="etl").info(
-            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
-            dataset,
-            source or "*",
-            state["row_count"],
-        )
         typer.echo(f"数据集: {dataset}")
         typer.echo(f"数据源: {source or '*'}")
         typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
@@ -197,13 +183,6 @@ def status(
         return
 
     if dataset == "daily-basic":
-        state = _get_daily_basic_status(config)
-        logger.bind(module="etl").info(
-            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
-            dataset,
-            source or "*",
-            state["row_count"],
-        )
         typer.echo(f"数据集: {dataset}")
         typer.echo(f"数据源: {source or '*'}")
         typer.echo(f"起始日期: {_format_optional_value(state['start_date'])}")
@@ -214,14 +193,6 @@ def status(
         return
 
     if dataset == "stock-basic":
-        with _status_session(config) as conn:
-            state = _get_stock_basic_status(conn)
-        logger.bind(module="etl").info(
-            "目标数据状态查询完成: dataset={}, source={}, row_count={}",
-            dataset,
-            source or "*",
-            state["row_count"],
-        )
         typer.echo(f"数据集: {dataset}")
         typer.echo(f"数据源: {source or '*'}")
         typer.echo(f"证券总数: {state['row_count']}")
@@ -234,156 +205,47 @@ def status(
     raise typer.BadParameter(f"暂未实现数据集状态查询: dataset={dataset}")
 
 
-@contextmanager
-def _status_session(config: QuantConfig) -> Generator[DuckDBPyConnection, None, None]:
-    """提供状态查询连接, 统一走 DuckDBManager 初始化 schema 和视图。"""
-    manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
-    manager.initialize()
-    with manager.session() as conn:
-        yield conn
+@app.command()
+def missing(
+    dataset: DatasetArg,
+    source: SourceOption,
+    start_date: Annotated[str | None, typer.Option("--start-date", help="开始日期")] = None,
+    end_date: Annotated[str | None, typer.Option("--end-date", help="结束日期")] = None,
+    config_dir: ConfigDirOption = None,
+    environment: EnvironmentOption = None,
+    log_level: LogLevelOption = "INFO",
+) -> None:
+    """查看指定日期范围内的数据集缺失日期。"""
+    config = _setup_runtime(config_dir, environment, log_level)
+    task = _build_task(dataset, source, start_date, end_date, force=False, dry_run=False)
+    try:
+        result = find_missing_dates(config, task)
+    except (FileNotFoundError, NotImplementedError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
-
-def _get_trade_calendar_status(conn: DuckDBPyConnection) -> dict[str, object]:
-    """从交易日历目标表聚合真实状态。"""
-    row = conn.execute(
-        """
-        SELECT
-            COALESCE(exchange, '*') AS exchange,
-            MIN(cal_date) AS start_date,
-            MAX(cal_date) AS end_date,
-            COUNT(*) AS row_count,
-            SUM(CASE WHEN is_open THEN 1 ELSE 0 END) AS open_count
-        FROM dim_trade_calendar
-        GROUP BY exchange
-        ORDER BY exchange
-        LIMIT 1
-        """
-    ).fetchone()
-    if row is None:
-        return {
-            "exchange": "-",
-            "start_date": None,
-            "end_date": None,
-            "row_count": 0,
-            "open_count": 0,
-        }
-
-    exchange, start_date, end_date, row_count, open_count = row
-    return {
-        "exchange": exchange,
-        "start_date": start_date,
-        "end_date": end_date,
-        "row_count": int(row_count),
-        "open_count": int(open_count or 0),
-    }
-
-
-def _get_daily_ohlcv_status(config: QuantConfig) -> dict[str, object]:
-    """从日线行情 processed Parquet 聚合真实状态。"""
-    return _get_daily_processed_status(
-        config,
-        dataset_dir_name="ohlcv",
-        view_name="v_daily_ohlcv",
+    logger.bind(module="etl").info(
+        "缺失日期检查完成: dataset={}, source={}, expected={}, existing={}, missing={}",
+        result.dataset,
+        result.source,
+        len(result.expected_dates),
+        len(result.existing_dates),
+        len(result.missing_dates),
     )
-
-
-def _get_adj_factor_status(config: QuantConfig) -> dict[str, object]:
-    """从复权因子 processed Parquet 聚合真实状态。"""
-    return _get_daily_processed_status(
-        config,
-        dataset_dir_name="adj_factor",
-        view_name="v_adj_factor",
+    typer.echo(f"数据集: {result.dataset}")
+    typer.echo(f"数据源: {result.source}")
+    typer.echo(
+        "检查范围: "
+        f"{result.start_date.isoformat()} 至 {result.end_date.isoformat()}"
     )
-
-
-def _get_daily_basic_status(config: QuantConfig) -> dict[str, object]:
-    """从每日指标 processed Parquet 聚合真实状态。"""
-    return _get_daily_processed_status(
-        config,
-        dataset_dir_name="daily_basic",
-        view_name="v_daily_basic",
-    )
-
-
-def _get_stock_basic_status(conn: DuckDBPyConnection) -> dict[str, object]:
-    """从证券主数据表聚合真实状态。"""
-    row = conn.execute(
-        """
-        SELECT
-            COUNT(*) AS row_count,
-            COUNT(DISTINCT exchange) AS exchange_count,
-            SUM(CASE WHEN list_status = 'L' THEN 1 ELSE 0 END) AS listed_count,
-            SUM(CASE WHEN list_status = 'D' THEN 1 ELSE 0 END) AS delisted_count,
-            SUM(CASE WHEN list_status = 'P' THEN 1 ELSE 0 END) AS paused_count
-        FROM dim_security
-        """
-    ).fetchone()
-    if row is None:
-        return {
-            "row_count": 0,
-            "exchange_count": 0,
-            "listed_count": 0,
-            "delisted_count": 0,
-            "paused_count": 0,
-        }
-
-    row_count, exchange_count, listed_count, delisted_count, paused_count = row
-    return {
-        "row_count": int(row_count or 0),
-        "exchange_count": int(exchange_count or 0),
-        "listed_count": int(listed_count or 0),
-        "delisted_count": int(delisted_count or 0),
-        "paused_count": int(paused_count or 0),
-    }
-
-
-def _get_daily_processed_status(
-    config: QuantConfig,
-    *,
-    dataset_dir_name: str,
-    view_name: str,
-) -> dict[str, object]:
-    """从日频 processed Parquet 聚合真实状态。"""
-    dataset_dir = config.paths.processed_dir / dataset_dir_name
-    if not list(dataset_dir.glob("**/*.parquet")):
-        return {
-            "start_date": None,
-            "end_date": None,
-            "row_count": 0,
-            "trade_date_count": 0,
-            "security_count": 0,
-        }
-
-    with _status_session(config) as conn:
-        row = conn.execute(
-            f"""
-            SELECT
-                MIN(trade_date) AS start_date,
-                MAX(trade_date) AS end_date,
-                COUNT(*) AS row_count,
-                COUNT(DISTINCT trade_date) AS trade_date_count,
-                COUNT(DISTINCT ts_code) AS security_count
-            FROM {view_name}
-            """
-        ).fetchone()
-
-    if row is None:
-        return {
-            "start_date": None,
-            "end_date": None,
-            "row_count": 0,
-            "trade_date_count": 0,
-            "security_count": 0,
-        }
-
-    start_date, end_date, row_count, trade_date_count, security_count = row
-    return {
-        "start_date": start_date,
-        "end_date": end_date,
-        "row_count": int(row_count or 0),
-        "trade_date_count": int(trade_date_count or 0),
-        "security_count": int(security_count or 0),
-    }
+    typer.echo(f"应有日期数: {len(result.expected_dates)}")
+    typer.echo(f"已有日期数: {len(result.existing_dates)}")
+    typer.echo(f"缺失日期数: {len(result.missing_dates)}")
+    if result.missing_dates:
+        typer.echo("缺失日期:")
+        for missing_date in result.missing_dates:
+            typer.echo(missing_date.isoformat())
+    else:
+        typer.echo("缺失日期: 无")
 
 
 def _setup_runtime(
