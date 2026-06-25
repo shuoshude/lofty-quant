@@ -234,9 +234,9 @@ DAILY_OHLCV_FIELD_COMMENTS = {
     "pct_chg": "涨跌幅, 单位为百分比",
     "volume": "成交量",
     "amount": "成交额",
-    "is_suspended": "是否停牌",
+    "is_suspended": "是否全天停牌",
     "is_st": "是否 ST 或风险警示",
-    "limit_status": "涨跌停状态",
+    "limit_status": "涨跌停状态, -1=全天停牌, 0=平盘, 1=上涨, 2=涨停, 3=下跌, 4=跌停",
 }
 ADJ_FACTOR_FIELD_COMMENTS = {
     "ts_code": "证券代码, 使用 Tushare 交易所后缀格式",

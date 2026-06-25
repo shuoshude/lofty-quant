@@ -46,7 +46,7 @@ def load_daily_raw_csv_to_monthly_parquet(
     dataset: str,
     *,
     read_frame: Callable[[Path], DataFrame],
-    normalize_frame: Callable[[DataFrame], DataFrame],
+    normalize_frame: Callable[[DataFrame, Path], DataFrame],
     date_column: str,
     key_columns: Sequence[str],
     columns: Sequence[str],
@@ -58,7 +58,7 @@ def load_daily_raw_csv_to_monthly_parquet(
     row_count = 0
     for raw_path in raw_files:
         logger.bind(module="etl").info("开始加载日频 raw: 路径={}", raw_path)
-        normalized_df = normalize_frame(read_frame(raw_path))
+        normalized_df = normalize_frame(read_frame(raw_path), raw_path)
         if normalized_df.empty:
             logger.bind(module="etl").info("日频 raw 为空, 跳过 processed 写入: 路径={}", raw_path)
             continue

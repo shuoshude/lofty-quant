@@ -63,7 +63,7 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
             "amount": [10500.0],
             "is_suspended": [False],
             "is_st": [False],
-            "limit_status": ["none"],
+            "limit_status": [0],
         },
     )
     write_parquet(
@@ -82,7 +82,7 @@ def test_initialize_registers_parquet_views_and_adjusted_daily_view(tmp_path: Pa
             "amount": [41000.0],
             "is_suspended": [False],
             "is_st": [False],
-            "limit_status": ["none"],
+            "limit_status": [0],
         },
     )
     write_parquet(

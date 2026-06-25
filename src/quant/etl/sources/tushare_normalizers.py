@@ -44,11 +44,20 @@ def normalize_trade_calendar_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     return output[["exchange", "cal_date", "is_open", "pretrade_date"]]
 
 
-def normalize_daily_ohlcv_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
+def normalize_daily_ohlcv_df(
+    raw_df: DataFrame,
+    task: ETLTask,
+    *,
+    stock_st_df: DataFrame | None = None,
+    stk_limit_df: DataFrame | None = None,
+    suspend_d_df: DataFrame | None = None,
+) -> DataFrame:
     """将 Tushare 日线 raw DataFrame 向量化转换为项目标准表结构。"""
     _require_daily_ohlcv_columns(raw_df)
     if raw_df.empty:
-        return pd.DataFrame(columns=DAILY_OHLCV_COLUMNS)
+        output = pd.DataFrame(columns=DAILY_OHLCV_COLUMNS)
+        output = _append_suspended_rows(output, task, stock_st_df, suspend_d_df)
+        return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_COLUMNS)])
 
     output = pd.DataFrame(index=raw_df.index)
     output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
@@ -70,8 +79,9 @@ def normalize_daily_ohlcv_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
             output[field_name] = None
 
     output["is_suspended"] = False
-    output["is_st"] = False
-    output["limit_status"] = "none"
+    output["is_st"] = _is_stock_st(output["ts_code"], stock_st_df)
+    output["limit_status"] = _calculate_limit_status(output, stk_limit_df)
+    output = _append_suspended_rows(output, task, stock_st_df, suspend_d_df)
     return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_COLUMNS)])
 
 
@@ -249,11 +259,184 @@ def _normalize_daily_basic_anomaly_fields(df: DataFrame) -> None:
         df.loc[anomaly_mask, field_name] = 0.0
 
 
-def _require_columns(df: DataFrame, columns: Sequence[str]) -> None:
+def _is_stock_st(ts_codes: pd.Series, stock_st_df: DataFrame | None) -> pd.Series:
+    """根据 stock-st 当日快照标记 ST 股票。"""
+    st_codes = _normalized_ts_code_set(stock_st_df)
+    if not st_codes:
+        return pd.Series(False, index=ts_codes.index)
+    return ts_codes.astype("string").str.strip().isin(st_codes)
+
+
+def _calculate_limit_status(output: DataFrame, stk_limit_df: DataFrame | None) -> pd.Series:
+    """根据涨跌停价格和开收盘价计算涨跌停状态。"""
+    status = _calculate_open_close_status(output)
+    if stk_limit_df is None or stk_limit_df.empty:
+        return status
+
+    _require_columns(
+        stk_limit_df,
+        ["ts_code", "up_limit", "down_limit"],
+        message="涨跌停 raw 缺少字段",
+    )
+    limit_df = stk_limit_df.loc[:, ["ts_code", "up_limit", "down_limit"]].copy()
+    limit_df["ts_code"] = limit_df["ts_code"].astype("string").str.strip()
+    limit_df["up_limit"] = pd.to_numeric(limit_df["up_limit"], errors="coerce")
+    limit_df["down_limit"] = pd.to_numeric(limit_df["down_limit"], errors="coerce")
+    limit_df = limit_df.drop_duplicates(subset=["ts_code"], keep="last").set_index("ts_code")
+
+    ts_codes = output["ts_code"].astype("string").str.strip()
+    up_limit = ts_codes.map(limit_df["up_limit"])
+    down_limit = ts_codes.map(limit_df["down_limit"])
+    close = output["close"]
+
+    missing_limit_mask = up_limit.isna() | down_limit.isna()
+    if missing_limit_mask.any():
+        sample_codes = ts_codes[missing_limit_mask].head(5).tolist()
+        logger.bind(module="etl").warning(
+            "涨跌停 raw 缺少部分股票涨跌停价, 已按 open/close 计算状态: 数量={}, 样例={}",
+            int(missing_limit_mask.sum()),
+            sample_codes,
+        )
+
+    up_mask = _float_equal(close, up_limit)
+    down_mask = _float_equal(close, down_limit)
+    status = status.mask(up_mask, 2)
+    status = status.mask(down_mask, 4)
+    return status.astype("int64")
+
+
+def _calculate_open_close_status(output: DataFrame) -> pd.Series:
+    """仅按开收盘价计算平盘、上涨和下跌状态。"""
+    open_price = output["open"]
+    close_price = output["close"]
+    status = pd.Series(0, index=output.index, dtype="int64")
+    status = status.mask(close_price > open_price, 1)
+    status = status.mask(close_price < open_price, 3)
+    return status
+
+
+def _append_suspended_rows(
+    output: DataFrame,
+    task: ETLTask,
+    stock_st_df: DataFrame | None,
+    suspend_d_df: DataFrame | None,
+) -> DataFrame:
+    """根据 suspend-d 全天停牌记录补充或覆盖 OHLCV 停牌行。"""
+    suspensions = _extract_full_day_suspensions(suspend_d_df, task)
+    if suspensions.empty:
+        return output.loc[:, list(DAILY_OHLCV_COLUMNS)]
+
+    prepared = output.loc[:, list(DAILY_OHLCV_COLUMNS)].copy()
+    st_codes = _normalized_ts_code_set(stock_st_df)
+    market_fields = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "pre_close",
+        "change",
+        "pct_chg",
+        "volume",
+        "amount",
+    ]
+
+    appended_rows: list[dict[str, Any]] = []
+    for row in suspensions.to_dict(orient="records"):
+        ts_code = str(row["ts_code"])
+        trade_date = row["trade_date"]
+        existing_mask = (prepared["ts_code"] == ts_code) & (prepared["trade_date"] == trade_date)
+        if existing_mask.any():
+            prepared.loc[existing_mask, market_fields] = None
+            prepared.loc[existing_mask, "is_suspended"] = True
+            prepared.loc[existing_mask, "is_st"] = ts_code in st_codes
+            prepared.loc[existing_mask, "limit_status"] = -1
+            continue
+
+        appended_rows.append(
+            {
+                "ts_code": ts_code,
+                "trade_date": trade_date,
+                "open": None,
+                "high": None,
+                "low": None,
+                "close": None,
+                "pre_close": None,
+                "change": None,
+                "pct_chg": None,
+                "volume": None,
+                "amount": None,
+                "is_suspended": True,
+                "is_st": ts_code in st_codes,
+                "limit_status": -1,
+            }
+        )
+
+    if appended_rows:
+        appended_df = pd.DataFrame(appended_rows, columns=list(DAILY_OHLCV_COLUMNS))
+        for column_name in prepared.columns:
+            try:
+                appended_df[column_name] = appended_df[column_name].astype(
+                    prepared[column_name].dtype
+                )
+            except (TypeError, ValueError):
+                continue
+        prepared = pd.concat([prepared, appended_df], ignore_index=True)
+    return prepared.loc[:, list(DAILY_OHLCV_COLUMNS)]
+
+
+def _extract_full_day_suspensions(suspend_d_df: DataFrame | None, task: ETLTask) -> DataFrame:
+    """从 suspend-d raw 中抽取全天停牌记录。"""
+    if suspend_d_df is None or suspend_d_df.empty:
+        return pd.DataFrame(columns=["ts_code", "trade_date"])
+
+    _require_columns(
+        suspend_d_df,
+        ["ts_code", "trade_date", "suspend_type"],
+        message="停牌 raw 缺少字段",
+    )
+    output = pd.DataFrame(index=suspend_d_df.index)
+    output["ts_code"] = suspend_d_df["ts_code"].astype("string").str.strip()
+    output["trade_date"] = _parse_date_series(suspend_d_df["trade_date"], field_name="trade_date")
+    _validate_daily_ohlcv_date_range(output["trade_date"], task)
+    suspend_type = suspend_d_df["suspend_type"].astype("string").str.strip().str.upper()
+
+    if "suspend_timing" in suspend_d_df.columns:
+        timing = suspend_d_df["suspend_timing"].astype("string").str.strip()
+        timing_missing_mask = _missing_string_mask(timing)
+    else:
+        timing_missing_mask = pd.Series(True, index=suspend_d_df.index)
+
+    full_day_mask = suspend_type.eq("S") & timing_missing_mask
+    return (
+        output.loc[full_day_mask, ["ts_code", "trade_date"]]
+        .dropna(subset=["ts_code", "trade_date"])
+        .drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
+        .reset_index(drop=True)
+    )
+
+
+def _normalized_ts_code_set(df: DataFrame | None) -> set[str]:
+    """从 raw DataFrame 中提取标准化 ts_code 集合。"""
+    if df is None or df.empty or "ts_code" not in df.columns:
+        return set()
+    return set(df["ts_code"].astype("string").str.strip().dropna().tolist())
+
+
+def _float_equal(left: pd.Series, right: pd.Series) -> pd.Series:
+    """比较两个价格序列是否近似相等。"""
+    return (left - right).abs().le(1e-8).fillna(False)
+
+
+def _require_columns(
+    df: DataFrame,
+    columns: Sequence[str],
+    *,
+    message: str = "交易日历 raw 缺少字段",
+) -> None:
     """校验 raw DataFrame 必须包含指定字段。"""
     missing_columns = [column for column in columns if column not in df.columns]
     if missing_columns:
-        raise ValueError(f"交易日历 raw 缺少字段: {missing_columns}")
+        raise ValueError(f"{message}: {missing_columns}")
 
 
 def _require_daily_ohlcv_columns(df: DataFrame) -> None:

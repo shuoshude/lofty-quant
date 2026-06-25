@@ -219,7 +219,7 @@ def test_load_daily_ohlcv_writes_monthly_processed_parquet(tmp_path: Path) -> No
     assert df["ts_code"].tolist() == ["000001.SZ"]
     assert pd.to_datetime(df["trade_date"]).dt.date.tolist() == [date(2024, 1, 2)]
     assert df["volume"].tolist() == [1000.0]
-    assert df["limit_status"].tolist() == ["none"]
+    assert df["limit_status"].tolist() == [1]
 
 
 def test_load_daily_ohlcv_writes_multiple_month_files(tmp_path: Path) -> None:
@@ -265,10 +265,24 @@ def test_load_daily_ohlcv_rejects_missing_raw(tmp_path: Path) -> None:
         load_raw_data(config, daily_task(date(2024, 1, 2), date(2024, 1, 2)))
 
 
+def test_load_daily_ohlcv_rejects_missing_auxiliary_raw(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_daily_raw(
+        config,
+        date(2024, 1, 2),
+        close="10.2",
+        write_auxiliary=False,
+    )
+
+    with pytest.raises(FileNotFoundError, match="缺少 daily-ohlcv 辅助 raw 文件: dataset=stock-st"):
+        load_raw_data(config, daily_task(date(2024, 1, 2), date(2024, 1, 2)))
+
+
 def test_load_daily_ohlcv_rejects_missing_column(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     raw_path = build_raw_path(config.paths.raw_dir, daily_task(date(2024, 1, 2), date(2024, 1, 2)))
     write_raw_csv(raw_path, pd.DataFrame([{"ts_code": "000001.SZ", "trade_date": "20240102"}]))
+    write_daily_auxiliary_raw(config, date(2024, 1, 2))
 
     with pytest.raises(ValueError, match="日线行情 raw 缺少字段"):
         load_raw_data(config, daily_task(date(2024, 1, 2), date(2024, 1, 2)))
@@ -312,12 +326,98 @@ def test_load_daily_ohlcv_skips_empty_raw(tmp_path: Path) -> None:
             ]
         ),
     )
+    write_daily_auxiliary_raw(config, date(2024, 1, 2))
 
     row_count = load_raw_data(config, daily_task(date(2024, 1, 2), date(2024, 1, 2)))
 
     output_path = processed_month_path(config, 2024, 1)
     assert row_count == 0
     assert not output_path.exists()
+
+
+def test_load_daily_ohlcv_applies_auxiliary_state_fields(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    trade_date = date(2024, 1, 2)
+    write_daily_raw(config, trade_date, ts_code="000001.SZ", close="12.0")
+    write_daily_auxiliary_raw(
+        config,
+        trade_date,
+        ts_code="000001.SZ",
+        stock_st_rows=[
+            {
+                "ts_code": "000001.SZ",
+                "name": "平安银行",
+                "trade_date": "20240102",
+                "type": "ST",
+                "type_name": "ST",
+            }
+        ],
+        stk_limit_rows=[
+            {
+                "trade_date": "20240102",
+                "ts_code": "000001.SZ",
+                "pre_close": 10.0,
+                "up_limit": 12.0,
+                "down_limit": 8.0,
+            }
+        ],
+    )
+
+    row_count = load_raw_data(config, daily_task(trade_date, trade_date))
+
+    df = pd.read_parquet(processed_month_path(config, 2024, 1))
+    assert row_count == 1
+    assert df["is_st"].tolist() == [True]
+    assert df["is_suspended"].tolist() == [False]
+    assert df["limit_status"].tolist() == [2]
+
+
+def test_load_daily_ohlcv_appends_full_day_suspension_rows(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    trade_date = date(2024, 1, 2)
+    write_daily_raw(config, trade_date, ts_code="000001.SZ")
+    write_daily_auxiliary_raw(
+        config,
+        trade_date,
+        ts_code="000001.SZ",
+        stock_st_rows=[
+            {
+                "ts_code": "000002.SZ",
+                "name": "万科A",
+                "trade_date": "20240102",
+                "type": "ST",
+                "type_name": "ST",
+            }
+        ],
+        stk_limit_rows=[
+            {
+                "trade_date": "20240102",
+                "ts_code": "000001.SZ",
+                "pre_close": 10.0,
+                "up_limit": 12.0,
+                "down_limit": 8.0,
+            }
+        ],
+        suspend_d_rows=[
+            {
+                "ts_code": "000002.SZ",
+                "trade_date": "20240102",
+                "suspend_timing": "",
+                "suspend_type": "S",
+            }
+        ],
+    )
+
+    row_count = load_raw_data(config, daily_task(trade_date, trade_date))
+
+    df = pd.read_parquet(processed_month_path(config, 2024, 1)).sort_values("ts_code")
+    assert row_count == 2
+    assert df["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
+    suspended_row = df[df["ts_code"] == "000002.SZ"].iloc[0]
+    assert pd.isna(suspended_row["open"])
+    assert bool(suspended_row["is_suspended"]) is True
+    assert bool(suspended_row["is_st"]) is True
+    assert suspended_row["limit_status"] == -1
 
 
 def test_load_adj_factor_writes_monthly_processed_parquet(tmp_path: Path) -> None:
@@ -705,6 +805,7 @@ def write_daily_raw(
     trade_date: str | None = None,
     open_: str = "10.0",
     close: str = "10.2",
+    write_auxiliary: bool = True,
 ) -> None:
     task = daily_task(raw_date, raw_date)
     raw_path = build_raw_path(config.paths.raw_dir, task)
@@ -728,6 +829,50 @@ def write_daily_raw(
             ]
         ),
     )
+    if write_auxiliary:
+        write_daily_auxiliary_raw(config, raw_date, ts_code=ts_code)
+
+
+def write_daily_auxiliary_raw(
+    config: QuantConfig,
+    raw_date: date,
+    *,
+    ts_code: str = "000001.SZ",
+    stock_st_rows: list[dict[str, object]] | None = None,
+    stk_limit_rows: list[dict[str, object]] | None = None,
+    suspend_d_rows: list[dict[str, object]] | None = None,
+) -> None:
+    trade_date_text = raw_date.strftime("%Y%m%d")
+    default_stk_limit_rows = [
+        {
+            "trade_date": trade_date_text,
+            "ts_code": ts_code,
+            "pre_close": 10.0,
+            "up_limit": 12.0,
+            "down_limit": 8.0,
+        }
+    ]
+    raw_frames = {
+        "stock-st": pd.DataFrame(
+            stock_st_rows
+            if stock_st_rows is not None
+            else [],
+            columns=["ts_code", "name", "trade_date", "type", "type_name"],
+        ),
+        "stk-limit": pd.DataFrame(
+            stk_limit_rows if stk_limit_rows is not None else default_stk_limit_rows,
+            columns=["trade_date", "ts_code", "pre_close", "up_limit", "down_limit"],
+        ),
+        "suspend-d": pd.DataFrame(
+            suspend_d_rows
+            if suspend_d_rows is not None
+            else [],
+            columns=["ts_code", "trade_date", "suspend_timing", "suspend_type"],
+        ),
+    }
+    for dataset, raw_df in raw_frames.items():
+        task = daily_task(raw_date, raw_date).model_copy(update={"dataset": dataset})
+        write_raw_csv(build_raw_path(config.paths.raw_dir, task), raw_df)
 
 
 def write_adj_factor_raw(
@@ -912,7 +1057,7 @@ def write_processed_daily(path: Path, year: int, month: int, ts_code: str, close
                 "amount": 10200.0,
                 "is_suspended": False,
                 "is_st": False,
-                "limit_status": "none",
+                "limit_status": 0,
             }
         ]
     ).to_parquet(path, index=False)

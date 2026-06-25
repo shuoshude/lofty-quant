@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime
 from typing import Literal
 
@@ -15,8 +16,13 @@ from quant.data.fields import (
 )
 
 TsCode = str
-LimitStatus = Literal["up", "down", "none"]
+LimitStatus = Literal[-1, 0, 1, 2, 3, 4]
 SecurityListStatus = Literal["L", "D", "P"]
+
+
+def _is_missing_float(value: float | None) -> bool:
+    """判断可选浮点字段是否缺失。"""
+    return value is None or (isinstance(value, float) and math.isnan(value))
 
 
 class AShareRecord(BaseModel):
@@ -100,27 +106,75 @@ class PriceRangeMixin(BaseModel):
         return self
 
 
-class DailyOHLCVRecord(AShareRecord, PriceRangeMixin):
+class DailyOHLCVRecord(AShareRecord):
     """包含 A 股交易状态标记的股票日线行情。"""
 
     trade_date: date = Field(description=DAILY_OHLCV_FIELD_COMMENTS["trade_date"])
+    open: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["open"])
+    high: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["high"])
+    low: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["low"])
+    close: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["close"])
     pre_close: float | None = Field(
         default=None,
         description=DAILY_OHLCV_FIELD_COMMENTS["pre_close"],
     )
     change: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["change"])
     pct_chg: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["pct_chg"])
-    volume: float = Field(ge=0, description=DAILY_OHLCV_FIELD_COMMENTS["volume"])
-    amount: float = Field(ge=0, description=DAILY_OHLCV_FIELD_COMMENTS["amount"])
+    volume: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["volume"])
+    amount: float | None = Field(default=None, description=DAILY_OHLCV_FIELD_COMMENTS["amount"])
     is_suspended: bool = Field(
         default=False,
         description=DAILY_OHLCV_FIELD_COMMENTS["is_suspended"],
     )
     is_st: bool = Field(default=False, description=DAILY_OHLCV_FIELD_COMMENTS["is_st"])
     limit_status: LimitStatus = Field(
-        default="none",
+        default=0,
         description=DAILY_OHLCV_FIELD_COMMENTS["limit_status"],
     )
+
+    @model_validator(mode="after")
+    def validate_trading_state(self) -> DailyOHLCVRecord:
+        """按停牌状态校验行情字段和涨跌停状态。"""
+        if self.is_suspended:
+            if self.limit_status != -1:
+                raise ValueError("全天停牌行 limit_status 必须为 -1")
+            return self
+
+        if self.limit_status == -1:
+            raise ValueError("非停牌行 limit_status 不能为 -1")
+
+        required_fields = {
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+            "amount": self.amount,
+        }
+        missing_fields = [
+            field_name for field_name, value in required_fields.items() if _is_missing_float(value)
+        ]
+        if missing_fields:
+            raise ValueError(f"非停牌行行情字段不能为空: {missing_fields}")
+
+        assert self.open is not None
+        assert self.high is not None
+        assert self.low is not None
+        assert self.close is not None
+        assert self.volume is not None
+        assert self.amount is not None
+
+        if min(self.open, self.high, self.low, self.close) <= 0:
+            raise ValueError("非停牌行 OHLC 价格必须大于 0")
+        if self.volume < 0 or self.amount < 0:
+            raise ValueError("非停牌行成交量和成交额不能小于 0")
+        if self.high < self.low:
+            raise ValueError("high 不能低于 low")
+        if not self.low <= self.open <= self.high:
+            raise ValueError("open 必须位于 low 和 high 之间")
+        if not self.low <= self.close <= self.high:
+            raise ValueError("close 必须位于 low 和 high 之间")
+        return self
 
 
 class AdjFactorRecord(AShareRecord):

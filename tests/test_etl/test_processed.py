@@ -140,6 +140,28 @@ def test_load_daily_raw_csv_to_monthly_parquet_writes_multiple_raw_files(tmp_pat
     assert pd.read_parquet(february_path)["ts_code"].tolist() == ["000002.SZ"]
 
 
+def test_load_daily_raw_csv_to_monthly_parquet_passes_raw_path(tmp_path: Path) -> None:
+    raw_path = write_raw_csv(tmp_path / "raw" / "20240102.csv", "000001.SZ", "2024-01-02", 10.0)
+    seen_paths: list[Path] = []
+
+    def normalize_with_path(df: pd.DataFrame, path: Path) -> pd.DataFrame:
+        seen_paths.append(path)
+        return normalize_raw_daily_df(df, path)
+
+    load_daily_raw_csv_to_monthly_parquet(
+        [raw_path],
+        tmp_path / "processed",
+        "ohlcv",
+        read_frame=pd.read_csv,
+        normalize_frame=normalize_with_path,
+        date_column="trade_date",
+        key_columns=DAILY_KEYS,
+        columns=DAILY_COLUMNS,
+    )
+
+    assert seen_paths == [raw_path]
+
+
 def test_load_daily_raw_csv_to_monthly_parquet_skips_empty_normalized_df(
     tmp_path: Path,
 ) -> None:
@@ -150,7 +172,7 @@ def test_load_daily_raw_csv_to_monthly_parquet_skips_empty_normalized_df(
         tmp_path / "processed",
         "ohlcv",
         read_frame=pd.read_csv,
-        normalize_frame=lambda _df: pd.DataFrame(columns=DAILY_COLUMNS),
+        normalize_frame=lambda _df, _path: pd.DataFrame(columns=DAILY_COLUMNS),
         date_column="trade_date",
         key_columns=DAILY_KEYS,
         columns=DAILY_COLUMNS,
@@ -277,7 +299,7 @@ def write_raw_csv(path: Path, ts_code: str, trade_date: str, close: float) -> Pa
     return path
 
 
-def normalize_raw_daily_df(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_raw_daily_df(df: pd.DataFrame, _path: Path) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "ts_code": df["code"],

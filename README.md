@@ -351,7 +351,7 @@ uv run python scripts/run_etl.py archive daily-ohlcv \
 ### 已支持的数据集
 
 - **trade-calendar + tushare**:拉取 Tushare 交易日历,保存 raw CSV,加载到 DuckDB `dim_trade_calendar`,并通过 `status` 查询目标表真实状态。
-- **daily-ohlcv + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare 日线接口,每个交易日保存一个 raw CSV;load 时标准化字段并用 Pydantic 契约校验,再写入月度 processed Parquet;已结束年份可归档为年度 Parquet。
+- **daily-ohlcv + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare 日线接口,每个交易日保存一个 raw CSV;load 时会同时读取同日 `stock-st`, `stk-limit`, `suspend-d` raw 来生成 ST、停牌和涨跌停状态,再写入月度 processed Parquet;已结束年份可归档为年度 Parquet。
 - **adj-factor + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `adj_factor` 接口,每个交易日保存一个 raw CSV;load 时把 Tushare `adj_factor` 标准化为项目字段 `cumulative_factor`,再写入月度 processed Parquet。
 - **daily-basic + tushare**:读取本地交易日历中的开市日,逐日调用 Tushare `daily_basic` 接口,每个交易日保存一个 raw CSV;load 时按 Tushare 官方每日指标字段约定标准化并做 Pydantic 契约校验,再写入月度 processed Parquet。
 - **stock-basic + tushare**:依次拉取 Tushare `stock_basic(list_status="L/D/P")`,合并为单个 raw CSV;load 时按接口字段选择列并全量覆盖 DuckDB `dim_security`,不做派生字段和契约校验。
@@ -408,7 +408,17 @@ data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet   # 月文件
 data/processed/ohlcv/year=2024/ohlcv_2024.parquet              # 年文件(归档后)
 ```
 
-`load daily-ohlcv` 永远先写月文件;如果同一月文件已存在,会读取旧文件和新 raw 合并,并按 `(ts_code, trade_date)` 去重,新数据覆盖旧数据。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份,会把该年份月文件合并到年文件,写入成功后删除月文件。不要长期同时保留同一年份的月文件和年文件,否则递归读取时会重复统计。
+`load daily-ohlcv` 永远先写月文件;如果同一月文件已存在,会读取旧文件和新 raw 合并,并按 `(ts_code, trade_date)` 去重,新数据覆盖旧数据。执行 load 前必须先准备同日期的 `daily-ohlcv`, `stock-st`, `stk-limit`, `suspend-d` raw;缺少任一辅助 raw 会直接失败。推荐顺序:
+
+```bash
+uv run python scripts/run_etl.py fetch daily-ohlcv --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py fetch stock-st --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py fetch stk-limit --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py fetch suspend-d --source tushare --start-date 20240102 --end-date 20240131
+uv run python scripts/run_etl.py load daily-ohlcv --source tushare --start-date 20240102 --end-date 20240131
+```
+
+`limit_status` 使用整数编码:`-1=全天停牌`, `0=收盘平盘`, `1=上涨(不含涨停)`, `2=涨停`, `3=下跌(不含跌停)`, `4=跌停`。`is_suspended` 表示全天停牌;`suspend-d` 中 `suspend_type=R` 或 `suspend_timing` 非空的日内临停不会补全天停牌行。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份,会把该年份月文件合并到年文件,写入成功后删除月文件。不要长期同时保留同一年份的月文件和年文件,否则递归读取时会重复统计。
 
 ### 复权因子 processed 层约定
 

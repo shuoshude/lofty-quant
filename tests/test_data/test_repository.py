@@ -154,7 +154,7 @@ def initialized_manager(tmp_path: Path) -> DuckDBManager:
             "amount": [10500.0, 18000.0, 10200.0],
             "is_suspended": [False, False, True],
             "is_st": [False, False, False],
-            "limit_status": ["none", "up", "none"],
+            "limit_status": [0, 1, -1],
         },
     )
     write_parquet(

@@ -809,11 +809,134 @@ def test_normalize_daily_ohlcv_df_rejects_negative_volume_and_amount() -> None:
     negative_volume_df = make_daily_raw_df(vol="-1.0")
     negative_amount_df = make_daily_raw_df(amount="-1.0")
 
-    with pytest.raises(ValueError, match=r"日线行情数据契约校验失败.*volume"):
+    with pytest.raises(ValueError, match="非停牌行成交量和成交额不能小于 0"):
         normalize_daily_ohlcv_df(negative_volume_df, make_daily_task())
 
-    with pytest.raises(ValueError, match=r"日线行情数据契约校验失败.*amount"):
+    with pytest.raises(ValueError, match="非停牌行成交量和成交额不能小于 0"):
         normalize_daily_ohlcv_df(negative_amount_df, make_daily_task())
+
+
+def test_normalize_daily_ohlcv_df_applies_stock_st_flags() -> None:
+    normalized = normalize_daily_ohlcv_df(
+        make_daily_raw_df(),
+        make_daily_task(),
+        stock_st_df=pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "name": "平安银行",
+                    "trade_date": "20240102",
+                    "type": "ST",
+                    "type_name": "ST",
+                }
+            ]
+        ),
+    )
+
+    assert normalized["is_st"].tolist() == [True]
+
+
+def test_normalize_daily_ohlcv_df_calculates_limit_status() -> None:
+    raw_df = pd.concat(
+        [
+            make_daily_raw_df(
+                ts_code="000001.SZ",
+                open_="10.0",
+                high="12.0",
+                low="8.0",
+                close="10.0",
+            ),
+            make_daily_raw_df(
+                ts_code="000002.SZ",
+                open_="10.0",
+                high="12.0",
+                low="8.0",
+                close="11.0",
+            ),
+            make_daily_raw_df(
+                ts_code="000003.SZ",
+                open_="10.0",
+                high="12.0",
+                low="8.0",
+                close="12.0",
+            ),
+            make_daily_raw_df(
+                ts_code="000004.SZ",
+                open_="10.0",
+                high="12.0",
+                low="8.0",
+                close="9.0",
+            ),
+            make_daily_raw_df(
+                ts_code="000005.SZ",
+                open_="10.0",
+                high="12.0",
+                low="8.0",
+                close="8.0",
+            ),
+        ],
+        ignore_index=True,
+    )
+    stk_limit_df = pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": "20240102", "up_limit": 12.0, "down_limit": 8.0},
+            {"ts_code": "000002.SZ", "trade_date": "20240102", "up_limit": 12.0, "down_limit": 8.0},
+            {"ts_code": "000003.SZ", "trade_date": "20240102", "up_limit": 12.0, "down_limit": 8.0},
+            {"ts_code": "000004.SZ", "trade_date": "20240102", "up_limit": 12.0, "down_limit": 8.0},
+            {"ts_code": "000005.SZ", "trade_date": "20240102", "up_limit": 12.0, "down_limit": 8.0},
+        ]
+    )
+
+    normalized = normalize_daily_ohlcv_df(raw_df, make_daily_task(), stk_limit_df=stk_limit_df)
+
+    assert normalized.sort_values("ts_code")["limit_status"].tolist() == [0, 1, 2, 3, 4]
+
+
+def test_normalize_daily_ohlcv_df_appends_full_day_suspension_rows() -> None:
+    normalized = normalize_daily_ohlcv_df(
+        make_daily_raw_df(ts_code="000001.SZ"),
+        make_daily_task(),
+        stock_st_df=pd.DataFrame(
+            [
+                {
+                    "ts_code": "000002.SZ",
+                    "name": "万科A",
+                    "trade_date": "20240102",
+                    "type": "ST",
+                    "type_name": "ST",
+                }
+            ]
+        ),
+        suspend_d_df=pd.DataFrame(
+            [
+                {
+                    "ts_code": "000002.SZ",
+                    "trade_date": "20240102",
+                    "suspend_timing": "",
+                    "suspend_type": "S",
+                },
+                {
+                    "ts_code": "000003.SZ",
+                    "trade_date": "20240102",
+                    "suspend_timing": "",
+                    "suspend_type": "R",
+                },
+                {
+                    "ts_code": "000004.SZ",
+                    "trade_date": "20240102",
+                    "suspend_timing": "09:30-10:30",
+                    "suspend_type": "S",
+                },
+            ]
+        ),
+    ).sort_values("ts_code")
+
+    assert normalized["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
+    suspended_row = normalized[normalized["ts_code"] == "000002.SZ"].iloc[0]
+    assert pd.isna(suspended_row["open"])
+    assert bool(suspended_row["is_suspended"]) is True
+    assert bool(suspended_row["is_st"]) is True
+    assert suspended_row["limit_status"] == -1
 
 
 def test_normalize_adj_factor_df_maps_to_cumulative_factor() -> None:

@@ -41,7 +41,7 @@ from quant.etl.sources.tushare_normalizers import (
     normalize_trade_calendar_df,
 )
 from quant.etl.storage import replace_table_dataframe
-from quant.utils import build_raw_path
+from quant.utils import build_raw_path, parse_daily_raw_file_date
 
 TUSHARE_REQUEST_SLEEP_SECONDS = 0.2
 TRADE_CALENDAR_EXCHANGE = "SSE"
@@ -66,8 +66,35 @@ class TushareDailyLoadSpec:
     label: str
     processed_dataset: str
     processed_columns: Sequence[str]
-    normalize_frame: Callable[[DataFrame, ETLTask], DataFrame]
+    normalize_frame: Callable[[DataFrame, ETLTask, Path], DataFrame]
     missing_raw_message: str
+
+
+def _normalize_daily_ohlcv_for_load(
+    raw_df: DataFrame,
+    task: ETLTask,
+    _raw_path: Path,
+) -> DataFrame:
+    """标准化日线行情 raw。"""
+    return normalize_daily_ohlcv_df(raw_df, task)
+
+
+def _normalize_adj_factor_for_load(
+    raw_df: DataFrame,
+    task: ETLTask,
+    _raw_path: Path,
+) -> DataFrame:
+    """标准化复权因子 raw。"""
+    return normalize_adj_factor_df(raw_df, task)
+
+
+def _normalize_daily_basic_for_load(
+    raw_df: DataFrame,
+    task: ETLTask,
+    _raw_path: Path,
+) -> DataFrame:
+    """标准化每日指标 raw。"""
+    return normalize_daily_basic_df(raw_df, task)
 
 
 TUSHARE_DAILY_FETCH_SPECS: dict[str, TushareDailyFetchSpec] = {
@@ -110,7 +137,7 @@ TUSHARE_DAILY_LOAD_SPECS: dict[str, TushareDailyLoadSpec] = {
         label="日线行情",
         processed_dataset="ohlcv",
         processed_columns=DAILY_OHLCV_COLUMNS,
-        normalize_frame=normalize_daily_ohlcv_df,
+        normalize_frame=_normalize_daily_ohlcv_for_load,
         missing_raw_message="未找到日线行情 raw CSV 文件",
     ),
     "adj-factor": TushareDailyLoadSpec(
@@ -118,7 +145,7 @@ TUSHARE_DAILY_LOAD_SPECS: dict[str, TushareDailyLoadSpec] = {
         label="复权因子",
         processed_dataset="adj_factor",
         processed_columns=ADJ_FACTOR_COLUMNS,
-        normalize_frame=normalize_adj_factor_df,
+        normalize_frame=_normalize_adj_factor_for_load,
         missing_raw_message="未找到复权因子 raw CSV 文件",
     ),
     "daily-basic": TushareDailyLoadSpec(
@@ -126,7 +153,7 @@ TUSHARE_DAILY_LOAD_SPECS: dict[str, TushareDailyLoadSpec] = {
         label="每日指标",
         processed_dataset="daily_basic",
         processed_columns=DAILY_BASIC_COLUMNS,
-        normalize_frame=normalize_daily_basic_df,
+        normalize_frame=_normalize_daily_basic_for_load,
         missing_raw_message="未找到每日指标 raw CSV 文件",
     ),
 }
@@ -470,7 +497,12 @@ class TushareSource:
             self._config.paths.processed_dir,
             spec.processed_dataset,
             read_frame=read_raw_csv,
-            normalize_frame=lambda raw_df: spec.normalize_frame(raw_df, task),
+            normalize_frame=lambda raw_df, raw_path: self._normalize_daily_frame(
+                raw_df,
+                task,
+                raw_path,
+                spec,
+            ),
             date_column="trade_date",
             key_columns=["ts_code", "trade_date"],
             columns=spec.processed_columns,
@@ -485,6 +517,49 @@ class TushareSource:
             )
 
         return result.row_count
+
+    def _normalize_daily_frame(
+        self,
+        raw_df: DataFrame,
+        task: ETLTask,
+        raw_path: Path,
+        spec: TushareDailyLoadSpec,
+    ) -> DataFrame:
+        """按数据集标准化日频 raw DataFrame。"""
+        if spec.dataset != "daily-ohlcv":
+            return spec.normalize_frame(raw_df, task, raw_path)
+
+        stock_st_df = self._read_same_day_raw(raw_path, task, "stock-st")
+        stk_limit_df = self._read_same_day_raw(raw_path, task, "stk-limit")
+        suspend_d_df = self._read_same_day_raw(raw_path, task, "suspend-d")
+        return normalize_daily_ohlcv_df(
+            raw_df,
+            task,
+            stock_st_df=stock_st_df,
+            stk_limit_df=stk_limit_df,
+            suspend_d_df=suspend_d_df,
+        )
+
+    def _read_same_day_raw(self, raw_path: Path, task: ETLTask, dataset: str) -> DataFrame:
+        """读取与当前日线行情 raw 同交易日的辅助 raw。"""
+        trade_date = parse_daily_raw_file_date(raw_path, task)
+        if trade_date is None:
+            raise ValueError(f"无法从日线行情 raw 文件名解析交易日: {raw_path}")
+
+        same_day_task = task.model_copy(
+            update={
+                "dataset": dataset,
+                "start_date": trade_date,
+                "end_date": trade_date,
+            }
+        )
+        same_day_path = build_raw_path(self._config.paths.raw_dir, same_day_task)
+        if not same_day_path.is_file():
+            raise FileNotFoundError(
+                "缺少 daily-ohlcv 辅助 raw 文件: "
+                f"dataset={dataset}, trade_date={trade_date:%Y-%m-%d}, path={same_day_path}"
+            )
+        return read_raw_csv(same_day_path)
 
     def _archive_daily_dataset(self, year: int, spec: TushareDailyLoadSpec) -> Path:
         """归档 Tushare 日频 processed 月文件为年文件。"""

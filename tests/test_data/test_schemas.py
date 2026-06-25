@@ -53,9 +53,22 @@ def test_daily_ohlcv_rejects_invalid_price_and_trading_state() -> None:
             limit_status="locked",
         )
 
+    with pytest.raises(ValidationError, match="Input should be"):
+        DailyOHLCVRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            open=10.0,
+            high=11.0,
+            low=9.0,
+            close=10.5,
+            volume=1000.0,
+            amount=10500.0,
+            limit_status=9,
+        )
+
 
 def test_daily_ohlcv_rejects_negative_volume() -> None:
-    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+    with pytest.raises(ValidationError, match="成交量和成交额不能小于 0"):
         DailyOHLCVRecord(
             ts_code="000001.SZ",
             trade_date=date(2024, 1, 2),
@@ -68,12 +81,61 @@ def test_daily_ohlcv_rejects_negative_volume() -> None:
         )
 
 
+def test_daily_ohlcv_allows_suspended_rows_with_empty_market_fields() -> None:
+    record = DailyOHLCVRecord(
+        ts_code="000001.SZ",
+        trade_date=date(2024, 1, 2),
+        is_suspended=True,
+        is_st=True,
+        limit_status=-1,
+    )
+
+    assert record.open is None
+    assert record.is_suspended is True
+    assert record.limit_status == -1
+
+
+def test_daily_ohlcv_rejects_invalid_suspended_state() -> None:
+    with pytest.raises(ValidationError, match="全天停牌行 limit_status 必须为 -1"):
+        DailyOHLCVRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            is_suspended=True,
+            limit_status=0,
+        )
+
+    with pytest.raises(ValidationError, match="非停牌行 limit_status 不能为 -1"):
+        DailyOHLCVRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            open=10.0,
+            high=11.0,
+            low=9.0,
+            close=10.5,
+            volume=1000.0,
+            amount=10500.0,
+            limit_status=-1,
+        )
+
+    with pytest.raises(ValidationError, match="非停牌行行情字段不能为空"):
+        DailyOHLCVRecord(
+            ts_code="000001.SZ",
+            trade_date=date(2024, 1, 2),
+            open=None,
+            high=11.0,
+            low=9.0,
+            close=10.5,
+            volume=1000.0,
+            amount=10500.0,
+        )
+
+
 def test_daily_ohlcv_schema_contains_chinese_field_descriptions() -> None:
     schema = DailyOHLCVRecord.model_json_schema()
 
     assert schema["properties"]["trade_date"]["description"] == "交易日"
     assert schema["properties"]["close"]["description"] == "收盘价"
-    assert schema["properties"]["limit_status"]["description"] == "涨跌停状态"
+    assert schema["properties"]["limit_status"]["description"].startswith("涨跌停状态")
 
 
 def test_adj_factor_record_uses_standard_cumulative_factor() -> None:
