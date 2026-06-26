@@ -915,7 +915,7 @@ def test_normalize_daily_ohlcv_df_filters_research_universe() -> None:
     assert normalized["ts_code"].tolist() == ["000001.SZ", "430047.BJ"]
 
 
-def test_normalize_daily_ohlcv_df_appends_full_day_suspension_rows() -> None:
+def test_normalize_daily_ohlcv_df_ignores_suspend_d_rows() -> None:
     normalized = normalize_daily_ohlcv_df(
         make_daily_raw_df(ts_code="000001.SZ"),
         make_daily_task(),
@@ -954,12 +954,9 @@ def test_normalize_daily_ohlcv_df_appends_full_day_suspension_rows() -> None:
         ),
     ).sort_values("ts_code")
 
-    assert normalized["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
-    suspended_row = normalized[normalized["ts_code"] == "000002.SZ"].iloc[0]
-    assert pd.isna(suspended_row["open"])
-    assert bool(suspended_row["is_suspended"]) is True
-    assert bool(suspended_row["is_st"]) is True
-    assert suspended_row["limit_status"] == -1
+    assert normalized["ts_code"].tolist() == ["000001.SZ"]
+    assert bool(normalized.iloc[0]["is_suspended"]) is False
+    assert normalized.iloc[0]["limit_status"] == 1
 
 
 def test_normalize_adj_factor_df_maps_to_cumulative_factor() -> None:
@@ -1082,7 +1079,7 @@ def test_normalize_daily_basic_df_normalizes_special_markers() -> None:
     assert loss_row["dv_ttm"] == 0.0
 
 
-def test_normalize_daily_basic_df_appends_full_day_suspension_rows() -> None:
+def test_normalize_daily_basic_df_ignores_suspend_d_rows() -> None:
     normalized = normalize_daily_basic_df(
         make_daily_basic_raw_df(ts_code="000001.SZ"),
         make_daily_basic_task(),
@@ -1132,18 +1129,12 @@ def test_normalize_daily_basic_df_appends_full_day_suspension_rows() -> None:
         },
     ).sort_values("ts_code")
 
-    assert normalized["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
-    suspended_row = normalized[normalized["ts_code"] == "000002.SZ"].iloc[0]
-    assert pd.isna(suspended_row["close"])
-    assert pd.isna(suspended_row["turnover_rate"])
-    assert pd.isna(suspended_row["turnover_rate_f"])
-    assert pd.isna(suspended_row["volume_ratio"])
-    assert suspended_row["pe"] == 15.0
-    assert suspended_row["pe_ttm"] == 16.0
-    assert suspended_row["total_share"] == 200000.0
+    assert normalized["ts_code"].tolist() == ["000001.SZ"]
+    assert normalized.iloc[0]["pe"] == 10.0
+    assert normalized.iloc[0]["total_share"] == 100000.0
 
 
-def test_normalize_daily_basic_df_filters_research_universe_and_auxiliary_raw() -> None:
+def test_normalize_daily_basic_df_filters_research_universe() -> None:
     task = ETLTask(
         dataset="daily-basic",
         source="tushare",
@@ -1160,48 +1151,9 @@ def test_normalize_daily_basic_df_filters_research_universe_and_auxiliary_raw() 
         ignore_index=True,
     )
 
-    normalized = normalize_daily_basic_df(
-        raw_df,
-        task,
-        suspend_d_df=pd.DataFrame(
-            [
-                {
-                    "ts_code": "430476.BJ",
-                    "trade_date": "20160104",
-                    "suspend_timing": "",
-                    "suspend_type": "S",
-                },
-                {
-                    "ts_code": "900901.SH",
-                    "trade_date": "20160104",
-                    "suspend_timing": "",
-                    "suspend_type": "S",
-                },
-            ]
-        ),
-        previous_records={},
-    ).sort_values("ts_code")
+    normalized = normalize_daily_basic_df(raw_df, task).sort_values("ts_code")
 
     assert normalized["ts_code"].tolist() == ["000001.SZ", "430047.BJ"]
-
-
-def test_normalize_daily_basic_df_rejects_missing_suspended_previous_record() -> None:
-    with pytest.raises(ValueError, match="无法补全每日指标停牌行"):
-        normalize_daily_basic_df(
-            make_daily_basic_raw_df(ts_code="000001.SZ"),
-            make_daily_basic_task(),
-            suspend_d_df=pd.DataFrame(
-                [
-                    {
-                        "ts_code": "000002.SZ",
-                        "trade_date": "20240102",
-                        "suspend_timing": "",
-                        "suspend_type": "S",
-                    }
-                ]
-            ),
-            previous_records={},
-        )
 
 
 def test_normalize_daily_basic_df_logs_and_zeroes_anomaly_fields(monkeypatch) -> None:

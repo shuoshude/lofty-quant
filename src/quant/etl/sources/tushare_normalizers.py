@@ -59,7 +59,6 @@ def normalize_daily_ohlcv_df(
     _require_daily_ohlcv_columns(raw_df)
     if raw_df.empty:
         output = pd.DataFrame(columns=DAILY_OHLCV_COLUMNS)
-        output = _append_suspended_rows(output, task, stock_st_df, suspend_d_df)
         return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_COLUMNS)])
 
     output = pd.DataFrame(index=raw_df.index)
@@ -85,7 +84,6 @@ def normalize_daily_ohlcv_df(
     output["is_suspended"] = False
     output["is_st"] = _is_stock_st(output["ts_code"], stock_st_df, task)
     output["limit_status"] = _calculate_limit_status(output, stk_limit_df, task)
-    output = _append_suspended_rows(output, task, stock_st_df, suspend_d_df)
     return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_COLUMNS)])
 
 
@@ -119,12 +117,6 @@ def normalize_daily_basic_df(
     _require_daily_basic_columns(raw_df)
     if raw_df.empty:
         output = pd.DataFrame(columns=DAILY_BASIC_COLUMNS)
-        output = _append_daily_basic_suspended_rows(
-            output,
-            task,
-            suspend_d_df,
-            previous_records,
-        )
         return _validate_daily_basic_contract(output.loc[:, list(DAILY_BASIC_COLUMNS)])
 
     output = pd.DataFrame(index=raw_df.index)
@@ -152,7 +144,6 @@ def normalize_daily_basic_df(
         output[field_name] = output[field_name].fillna(0.0).mask(output[field_name] < 0, 0.0)
     _normalize_daily_basic_anomaly_fields(output)
 
-    output = _append_daily_basic_suspended_rows(output, task, suspend_d_df, previous_records)
     return _validate_daily_basic_contract(output.loc[:, list(DAILY_BASIC_COLUMNS)])
 
 
@@ -333,74 +324,6 @@ def _normalize_daily_basic_anomaly_fields(df: DataFrame) -> None:
         df.loc[anomaly_mask, field_name] = 0.0
 
 
-def _append_daily_basic_suspended_rows(
-    output: DataFrame,
-    task: ETLTask,
-    suspend_d_df: DataFrame | None,
-    previous_records: Mapping[str, Mapping[str, Any]] | None,
-) -> DataFrame:
-    """根据 suspend-d 全天停牌记录补充或覆盖每日指标停牌行。"""
-    suspensions = _extract_full_day_suspensions(suspend_d_df, task)
-    if suspensions.empty:
-        return output.loc[:, list(DAILY_BASIC_COLUMNS)]
-
-    prepared = output.loc[:, list(DAILY_BASIC_COLUMNS)].copy()
-    previous_records = previous_records or {}
-    state_fields = {"close", "turnover_rate", "turnover_rate_f", "volume_ratio"}
-    carry_fields = [
-        field_name
-        for field_name in DAILY_BASIC_COLUMNS
-        if field_name not in {"ts_code", "trade_date", *state_fields}
-    ]
-    appended_rows: list[dict[str, Any]] = []
-    missing_previous: list[str] = []
-
-    for row in suspensions.to_dict(orient="records"):
-        ts_code = str(row["ts_code"])
-        trade_date = row["trade_date"]
-        previous = previous_records.get(ts_code)
-        if previous is None:
-            missing_previous.append(f"{ts_code}@{trade_date}")
-            continue
-
-        suspended_row = {
-            "ts_code": ts_code,
-            "trade_date": trade_date,
-            "close": None,
-            "turnover_rate": None,
-            "turnover_rate_f": None,
-            "volume_ratio": None,
-        }
-        for field_name in carry_fields:
-            suspended_row[field_name] = previous.get(field_name)
-
-        existing_mask = (prepared["ts_code"] == ts_code) & (prepared["trade_date"] == trade_date)
-        if existing_mask.any():
-            for field_name, value in suspended_row.items():
-                prepared.loc[existing_mask, field_name] = value
-            continue
-        appended_rows.append(suspended_row)
-
-    if missing_previous:
-        raise ValueError(
-            "无法补全每日指标停牌行, 缺少上一开市日数据: "
-            f"{missing_previous[:5]}"
-        )
-
-    if appended_rows:
-        appended_df = pd.DataFrame(appended_rows, columns=list(DAILY_BASIC_COLUMNS))
-        for column_name in prepared.columns:
-            try:
-                appended_df[column_name] = appended_df[column_name].astype(
-                    prepared[column_name].dtype
-                )
-            except (TypeError, ValueError):
-                continue
-        prepared = pd.concat([prepared, appended_df], ignore_index=True)
-
-    return prepared.loc[:, list(DAILY_BASIC_COLUMNS)]
-
-
 def _is_stock_st(ts_codes: pd.Series, stock_st_df: DataFrame | None, task: ETLTask) -> pd.Series:
     """根据 stock-st 当日快照标记 ST 股票。"""
     st_codes = _normalized_ts_code_set(stock_st_df, task, dataset="stock-st")
@@ -462,109 +385,6 @@ def _calculate_open_close_status(output: DataFrame) -> pd.Series:
     status = status.mask(close_price > open_price, 1)
     status = status.mask(close_price < open_price, 3)
     return status
-
-
-def _append_suspended_rows(
-    output: DataFrame,
-    task: ETLTask,
-    stock_st_df: DataFrame | None,
-    suspend_d_df: DataFrame | None,
-) -> DataFrame:
-    """根据 suspend-d 全天停牌记录补充或覆盖 OHLCV 停牌行。"""
-    suspensions = _extract_full_day_suspensions(suspend_d_df, task)
-    if suspensions.empty:
-        return output.loc[:, list(DAILY_OHLCV_COLUMNS)]
-
-    prepared = output.loc[:, list(DAILY_OHLCV_COLUMNS)].copy()
-    st_codes = _normalized_ts_code_set(stock_st_df, task, dataset="stock-st")
-    market_fields = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "pre_close",
-        "change",
-        "pct_chg",
-        "volume",
-        "amount",
-    ]
-
-    appended_rows: list[dict[str, Any]] = []
-    for row in suspensions.to_dict(orient="records"):
-        ts_code = str(row["ts_code"])
-        trade_date = row["trade_date"]
-        existing_mask = (prepared["ts_code"] == ts_code) & (prepared["trade_date"] == trade_date)
-        if existing_mask.any():
-            prepared.loc[existing_mask, market_fields] = None
-            prepared.loc[existing_mask, "is_suspended"] = True
-            prepared.loc[existing_mask, "is_st"] = ts_code in st_codes
-            prepared.loc[existing_mask, "limit_status"] = -1
-            continue
-
-        appended_rows.append(
-            {
-                "ts_code": ts_code,
-                "trade_date": trade_date,
-                "open": None,
-                "high": None,
-                "low": None,
-                "close": None,
-                "pre_close": None,
-                "change": None,
-                "pct_chg": None,
-                "volume": None,
-                "amount": None,
-                "is_suspended": True,
-                "is_st": ts_code in st_codes,
-                "limit_status": -1,
-            }
-        )
-
-    if appended_rows:
-        appended_df = pd.DataFrame(appended_rows, columns=list(DAILY_OHLCV_COLUMNS))
-        for column_name in prepared.columns:
-            try:
-                appended_df[column_name] = appended_df[column_name].astype(
-                    prepared[column_name].dtype
-                )
-            except (TypeError, ValueError):
-                continue
-        prepared = pd.concat([prepared, appended_df], ignore_index=True)
-    return prepared.loc[:, list(DAILY_OHLCV_COLUMNS)]
-
-
-def _extract_full_day_suspensions(suspend_d_df: DataFrame | None, task: ETLTask) -> DataFrame:
-    """从 suspend-d raw 中抽取全天停牌记录。"""
-    if suspend_d_df is None or suspend_d_df.empty:
-        return pd.DataFrame(columns=["ts_code", "trade_date"])
-
-    _require_columns(
-        suspend_d_df,
-        ["ts_code", "trade_date", "suspend_type"],
-        message="停牌 raw 缺少字段",
-    )
-    output = pd.DataFrame(index=suspend_d_df.index)
-    output["ts_code"] = suspend_d_df["ts_code"].astype("string").str.strip()
-    output["trade_date"] = _parse_date_series(suspend_d_df["trade_date"], field_name="trade_date")
-    _validate_daily_ohlcv_date_range(output["trade_date"], task)
-    output = filter_research_universe_df(output, task, dataset="suspend-d")
-    suspend_type = suspend_d_df["suspend_type"].astype("string").str.strip().str.upper()
-    suspend_type = suspend_type.loc[output.index]
-
-    if "suspend_timing" in suspend_d_df.columns:
-        timing = suspend_d_df["suspend_timing"].astype("string").str.strip()
-        timing = timing.loc[output.index]
-        timing_missing_mask = _missing_string_mask(timing)
-    else:
-        timing_missing_mask = pd.Series(True, index=output.index)
-
-    full_day_mask = suspend_type.eq("S") & timing_missing_mask
-    return (
-        output.loc[full_day_mask, ["ts_code", "trade_date"]]
-        .dropna(subset=["ts_code", "trade_date"])
-        .drop_duplicates(subset=["ts_code", "trade_date"], keep="last")
-        .reset_index(drop=True)
-    )
 
 
 def _normalized_ts_code_set(

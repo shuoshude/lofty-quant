@@ -377,6 +377,8 @@ def test_load_daily_ohlcv_applies_auxiliary_state_fields(tmp_path: Path) -> None
             }
         ],
     )
+    suspend_task = daily_task(trade_date, trade_date).model_copy(update={"dataset": "suspend-d"})
+    build_raw_path(config.paths.raw_dir, suspend_task).unlink()
 
     row_count = load_raw_data(config, daily_task(trade_date, trade_date))
 
@@ -387,7 +389,7 @@ def test_load_daily_ohlcv_applies_auxiliary_state_fields(tmp_path: Path) -> None
     assert df["limit_status"].tolist() == [2]
 
 
-def test_load_daily_ohlcv_appends_full_day_suspension_rows(tmp_path: Path) -> None:
+def test_load_daily_ohlcv_does_not_require_suspend_d_or_append_rows(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     trade_date = date(2024, 1, 2)
     write_daily_raw(config, trade_date, ts_code="000001.SZ")
@@ -413,26 +415,17 @@ def test_load_daily_ohlcv_appends_full_day_suspension_rows(tmp_path: Path) -> No
                 "down_limit": 8.0,
             }
         ],
-        suspend_d_rows=[
-            {
-                "ts_code": "000002.SZ",
-                "trade_date": "20240102",
-                "suspend_timing": "",
-                "suspend_type": "S",
-            }
-        ],
     )
+    suspend_task = daily_task(trade_date, trade_date).model_copy(update={"dataset": "suspend-d"})
+    build_raw_path(config.paths.raw_dir, suspend_task).unlink()
 
     row_count = load_raw_data(config, daily_task(trade_date, trade_date))
 
     df = pd.read_parquet(processed_month_path(config, 2024, 1)).sort_values("ts_code")
-    assert row_count == 2
-    assert df["ts_code"].tolist() == ["000001.SZ", "000002.SZ"]
-    suspended_row = df[df["ts_code"] == "000002.SZ"].iloc[0]
-    assert pd.isna(suspended_row["open"])
-    assert bool(suspended_row["is_suspended"]) is True
-    assert bool(suspended_row["is_st"]) is True
-    assert suspended_row["limit_status"] == -1
+    assert row_count == 1
+    assert df["ts_code"].tolist() == ["000001.SZ"]
+    assert bool(df.iloc[0]["is_suspended"]) is False
+    assert df.iloc[0]["limit_status"] == 1
 
 
 def test_load_daily_ohlcv_filters_b_shares_before_processed_write(tmp_path: Path) -> None:
@@ -696,82 +689,20 @@ def test_load_daily_basic_skips_empty_raw(tmp_path: Path) -> None:
     assert not daily_basic_month_path(config, 2024, 1).exists()
 
 
-def test_load_daily_basic_appends_suspended_rows_from_previous_open_day(
-    tmp_path: Path,
-) -> None:
+def test_load_daily_basic_does_not_require_suspend_d_raw(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 3))
-    write_daily_basic_raw(config, date(2024, 1, 2), ts_code="000002.SZ", pe="15.0")
-    write_daily_basic_raw(config, date(2024, 1, 3), ts_code="000001.SZ", pe="10.0")
-    write_daily_basic_auxiliary_raw(
-        config,
-        date(2024, 1, 3),
-        suspend_d_rows=[
-            {
-                "ts_code": "000002.SZ",
-                "trade_date": "20240103",
-                "suspend_timing": "",
-                "suspend_type": "S",
-            }
-        ],
-    )
-
-    row_count = load_raw_data(config, task)
-
-    df = pd.read_parquet(daily_basic_month_path(config, 2024, 1)).sort_values(
-        ["trade_date", "ts_code"]
-    )
-    suspended_row = df[
-        (df["ts_code"] == "000002.SZ")
-        & (pd.to_datetime(df["trade_date"]).dt.date == date(2024, 1, 3))
-    ].iloc[0]
-
-    assert row_count == 3
-    assert pd.isna(suspended_row["close"])
-    assert pd.isna(suspended_row["turnover_rate"])
-    assert pd.isna(suspended_row["turnover_rate_f"])
-    assert pd.isna(suspended_row["volume_ratio"])
-    assert suspended_row["pe"] == 15.0
-    assert suspended_row["pe_ttm"] == 11.0
-    assert suspended_row["total_share"] == 100000.0
-
-
-def test_load_daily_basic_ignores_filtered_suspended_rows_without_previous_record(
-    tmp_path: Path,
-) -> None:
-    config = make_config(tmp_path)
-    trade_date = date(2016, 1, 4)
+    trade_date = date(2024, 1, 2)
     task = daily_basic_task(trade_date, trade_date)
-    write_daily_basic_raw(config, trade_date, ts_code="000001.SZ")
-    write_daily_basic_auxiliary_raw(
-        config,
-        trade_date,
-        suspend_d_rows=[
-            {
-                "ts_code": "430476.BJ",
-                "trade_date": "20160104",
-                "suspend_timing": "",
-                "suspend_type": "S",
-            },
-            {
-                "ts_code": "200011.SZ",
-                "trade_date": "20160104",
-                "suspend_timing": "",
-                "suspend_type": "S",
-            },
-        ],
-    )
+    write_daily_basic_raw(config, trade_date, ts_code="000001.SZ", write_auxiliary=False)
 
     row_count = load_raw_data(config, task)
 
-    df = pd.read_parquet(daily_basic_month_path(config, 2016, 1))
+    df = pd.read_parquet(daily_basic_month_path(config, 2024, 1))
     assert row_count == 1
     assert df["ts_code"].tolist() == ["000001.SZ"]
 
 
-def test_load_daily_basic_rejects_missing_suspended_previous_record(
-    tmp_path: Path,
-) -> None:
+def test_load_daily_basic_ignores_existing_suspend_d_raw(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     task = daily_basic_task(date(2024, 1, 2), date(2024, 1, 2))
     write_daily_basic_raw(config, date(2024, 1, 2), ts_code="000001.SZ")
@@ -788,8 +719,11 @@ def test_load_daily_basic_rejects_missing_suspended_previous_record(
         ],
     )
 
-    with pytest.raises(ValueError, match="无法补全每日指标停牌行"):
-        load_raw_data(config, task)
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(daily_basic_month_path(config, 2024, 1))
+    assert row_count == 1
+    assert df["ts_code"].tolist() == ["000001.SZ"]
 
 
 def test_load_stock_basic_overwrites_dim_security(tmp_path: Path) -> None:

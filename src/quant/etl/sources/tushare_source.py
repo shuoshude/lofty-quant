@@ -495,10 +495,6 @@ class TushareSource:
         if not raw_files:
             raise FileNotFoundError(spec.missing_raw_message)
 
-        daily_basic_previous_records = (
-            self._load_daily_basic_previous_records(task) if spec.dataset == "daily-basic" else {}
-        )
-
         result = load_daily_raw_csv_to_monthly_parquet(
             raw_files,
             self._config.paths.processed_dir,
@@ -509,7 +505,6 @@ class TushareSource:
                 task,
                 raw_path,
                 spec,
-                daily_basic_previous_records=daily_basic_previous_records,
             ),
             date_column="trade_date",
             key_columns=["ts_code", "trade_date"],
@@ -532,35 +527,20 @@ class TushareSource:
         task: ETLTask,
         raw_path: Path,
         spec: TushareDailyLoadSpec,
-        *,
-        daily_basic_previous_records: dict[str, dict[str, Any]],
     ) -> DataFrame:
         """按数据集标准化日频 raw DataFrame。"""
         if spec.dataset == "daily-ohlcv":
             stock_st_df = self._read_same_day_raw(raw_path, task, "stock-st")
             stk_limit_df = self._read_same_day_raw(raw_path, task, "stk-limit")
-            suspend_d_df = self._read_same_day_raw(raw_path, task, "suspend-d")
             return normalize_daily_ohlcv_df(
                 raw_df,
                 task,
                 stock_st_df=stock_st_df,
                 stk_limit_df=stk_limit_df,
-                suspend_d_df=suspend_d_df,
             )
 
         if spec.dataset == "daily-basic":
-            suspend_d_df = self._read_same_day_raw(raw_path, task, "suspend-d")
-            normalized_df = normalize_daily_basic_df(
-                raw_df,
-                task,
-                suspend_d_df=suspend_d_df,
-                previous_records=daily_basic_previous_records,
-            )
-            self._update_daily_basic_previous_records(
-                daily_basic_previous_records,
-                normalized_df,
-            )
-            return normalized_df
+            return normalize_daily_basic_df(raw_df, task)
 
         return spec.normalize_frame(raw_df, task, raw_path)
 
@@ -584,55 +564,6 @@ class TushareSource:
                 f"dataset={dataset}, trade_date={trade_date:%Y-%m-%d}, path={same_day_path}"
             )
         return read_raw_csv(same_day_path)
-
-    def _load_daily_basic_previous_records(self, task: ETLTask) -> dict[str, dict[str, Any]]:
-        """读取任务开始日前最后一条每日指标 processed 记录作为补全基准。"""
-        dataset_dir = self._config.paths.processed_dir / "daily_basic"
-        parquet_files = sorted(dataset_dir.glob("**/*.parquet"))
-        if not parquet_files:
-            return {}
-
-        frames = []
-        for parquet_file in parquet_files:
-            df = pd.read_parquet(parquet_file)
-            if not df.empty:
-                frames.append(df)
-        if not frames:
-            return {}
-
-        all_df = pd.concat(frames, ignore_index=True)
-        all_df["trade_date"] = pd.to_datetime(all_df["trade_date"]).dt.date
-        previous_df = all_df.loc[all_df["trade_date"] < task.start_date, list(DAILY_BASIC_COLUMNS)]
-        if previous_df.empty:
-            return {}
-
-        latest_df = (
-            previous_df.sort_values(["ts_code", "trade_date"])
-            .drop_duplicates(subset=["ts_code"], keep="last")
-            .reset_index(drop=True)
-        )
-        records = latest_df.to_dict(orient="records")
-        return {
-            str(row["ts_code"]): {str(key): value for key, value in row.items()}
-            for row in records
-        }
-
-    @staticmethod
-    def _update_daily_basic_previous_records(
-        previous_records: dict[str, dict[str, Any]],
-        normalized_df: DataFrame,
-    ) -> None:
-        """用当前已标准化每日指标更新上一开市日缓存。"""
-        if normalized_df.empty:
-            return
-
-        prepared = normalized_df.loc[:, list(DAILY_BASIC_COLUMNS)].copy()
-        prepared["trade_date"] = pd.to_datetime(prepared["trade_date"]).dt.date
-        prepared = prepared.sort_values(["ts_code", "trade_date"])
-        for row in prepared.to_dict(orient="records"):
-            previous_records[str(row["ts_code"])] = {
-                str(key): value for key, value in row.items()
-            }
 
     def _archive_daily_dataset(self, year: int, spec: TushareDailyLoadSpec) -> Path:
         """归档 Tushare 日频 processed 月文件为年文件。"""
