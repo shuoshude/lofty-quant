@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -20,6 +21,8 @@ from quant.data.fields import (
 )
 from quant.data.schemas import AdjFactorRecord, DailyBasicRecord, DailyOHLCVRecord
 from quant.etl.etl_model import ETLTask
+
+BJ_EXCHANGE_OPEN_DATE = date(2021, 11, 15)
 
 
 def normalize_trade_calendar_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
@@ -63,6 +66,7 @@ def normalize_daily_ohlcv_df(
     output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
     output["trade_date"] = _parse_date_series(raw_df["trade_date"], field_name="trade_date")
     _validate_daily_ohlcv_date_range(output["trade_date"], task)
+    output = filter_research_universe_df(output, task, dataset="daily-ohlcv")
 
     for field_name in ("open", "high", "low", "close", "amount"):
         output[field_name] = _parse_numeric_series(raw_df[field_name], field_name=field_name)
@@ -79,8 +83,8 @@ def normalize_daily_ohlcv_df(
             output[field_name] = None
 
     output["is_suspended"] = False
-    output["is_st"] = _is_stock_st(output["ts_code"], stock_st_df)
-    output["limit_status"] = _calculate_limit_status(output, stk_limit_df)
+    output["is_st"] = _is_stock_st(output["ts_code"], stock_st_df, task)
+    output["limit_status"] = _calculate_limit_status(output, stk_limit_df, task)
     output = _append_suspended_rows(output, task, stock_st_df, suspend_d_df)
     return _validate_daily_ohlcv_contract(output.loc[:, list(DAILY_OHLCV_COLUMNS)])
 
@@ -95,6 +99,7 @@ def normalize_adj_factor_df(raw_df: DataFrame, task: ETLTask) -> DataFrame:
     output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
     output["trade_date"] = _parse_date_series(raw_df["trade_date"], field_name="trade_date")
     _validate_adj_factor_date_range(output["trade_date"], task)
+    output = filter_research_universe_df(output, task, dataset="adj-factor")
     output["cumulative_factor"] = _parse_numeric_series(
         raw_df["adj_factor"],
         field_name="adj_factor",
@@ -126,6 +131,7 @@ def normalize_daily_basic_df(
     output["ts_code"] = raw_df["ts_code"].astype("string").str.strip()
     output["trade_date"] = _parse_date_series(raw_df["trade_date"], field_name="trade_date")
     _validate_daily_basic_date_range(output["trade_date"], task)
+    output = filter_research_universe_df(output, task, dataset="daily-basic")
 
     for field_name in DAILY_BASIC_COLUMNS:
         if field_name in {"ts_code", "trade_date"}:
@@ -148,6 +154,48 @@ def normalize_daily_basic_df(
 
     output = _append_daily_basic_suspended_rows(output, task, suspend_d_df, previous_records)
     return _validate_daily_basic_contract(output.loc[:, list(DAILY_BASIC_COLUMNS)])
+
+
+def filter_research_universe_df(
+    df: DataFrame,
+    task: ETLTask,
+    *,
+    date_column: str = "trade_date",
+    dataset: str | None = None,
+) -> DataFrame:
+    """过滤研究层暂不纳入的历史 BJ 和 B 股数据。"""
+    if df.empty or "ts_code" not in df.columns:
+        return df.copy()
+    if date_column not in df.columns:
+        raise ValueError(f"研究范围过滤缺少日期字段: {date_column}")
+
+    output = df.copy()
+    ts_codes = output["ts_code"].astype("string").str.strip()
+    trade_dates = pd.to_datetime(output[date_column], errors="coerce").dt.date
+
+    b_share_mask = (
+        (ts_codes.str.startswith("900", na=False) & ts_codes.str.endswith(".SH", na=False))
+        | (ts_codes.str.startswith("200", na=False) & ts_codes.str.endswith(".SZ", na=False))
+    )
+    historical_bj_mask = ts_codes.str.endswith(".BJ", na=False) & trade_dates.lt(
+        BJ_EXCHANGE_OPEN_DATE
+    )
+    filtered_mask = b_share_mask | historical_bj_mask
+    if not filtered_mask.any():
+        return output
+
+    sample_rows = (
+        output.loc[filtered_mask, ["ts_code", date_column]]
+        .head(5)
+        .to_dict(orient="records")
+    )
+    logger.bind(module="etl").info(
+        "研究层过滤历史 BJ/B 股数据: dataset={}, 过滤行数={}, 样例={}",
+        dataset or task.dataset,
+        int(filtered_mask.sum()),
+        sample_rows,
+    )
+    return output.loc[~filtered_mask].copy()
 
 
 def _validate_daily_ohlcv_contract(df: DataFrame) -> DataFrame:
@@ -353,15 +401,19 @@ def _append_daily_basic_suspended_rows(
     return prepared.loc[:, list(DAILY_BASIC_COLUMNS)]
 
 
-def _is_stock_st(ts_codes: pd.Series, stock_st_df: DataFrame | None) -> pd.Series:
+def _is_stock_st(ts_codes: pd.Series, stock_st_df: DataFrame | None, task: ETLTask) -> pd.Series:
     """根据 stock-st 当日快照标记 ST 股票。"""
-    st_codes = _normalized_ts_code_set(stock_st_df)
+    st_codes = _normalized_ts_code_set(stock_st_df, task, dataset="stock-st")
     if not st_codes:
         return pd.Series(False, index=ts_codes.index)
     return ts_codes.astype("string").str.strip().isin(st_codes)
 
 
-def _calculate_limit_status(output: DataFrame, stk_limit_df: DataFrame | None) -> pd.Series:
+def _calculate_limit_status(
+    output: DataFrame,
+    stk_limit_df: DataFrame | None,
+    task: ETLTask,
+) -> pd.Series:
     """根据涨跌停价格和开收盘价计算涨跌停状态。"""
     status = _calculate_open_close_status(output)
     if stk_limit_df is None or stk_limit_df.empty:
@@ -372,7 +424,10 @@ def _calculate_limit_status(output: DataFrame, stk_limit_df: DataFrame | None) -
         ["ts_code", "up_limit", "down_limit"],
         message="涨跌停 raw 缺少字段",
     )
-    limit_df = stk_limit_df.loc[:, ["ts_code", "up_limit", "down_limit"]].copy()
+    limit_df = filter_research_universe_df(stk_limit_df, task, dataset="stk-limit")
+    if limit_df.empty:
+        return status
+    limit_df = limit_df.loc[:, ["ts_code", "up_limit", "down_limit"]].copy()
     limit_df["ts_code"] = limit_df["ts_code"].astype("string").str.strip()
     limit_df["up_limit"] = pd.to_numeric(limit_df["up_limit"], errors="coerce")
     limit_df["down_limit"] = pd.to_numeric(limit_df["down_limit"], errors="coerce")
@@ -421,7 +476,7 @@ def _append_suspended_rows(
         return output.loc[:, list(DAILY_OHLCV_COLUMNS)]
 
     prepared = output.loc[:, list(DAILY_OHLCV_COLUMNS)].copy()
-    st_codes = _normalized_ts_code_set(stock_st_df)
+    st_codes = _normalized_ts_code_set(stock_st_df, task, dataset="stock-st")
     market_fields = [
         "open",
         "high",
@@ -492,13 +547,16 @@ def _extract_full_day_suspensions(suspend_d_df: DataFrame | None, task: ETLTask)
     output["ts_code"] = suspend_d_df["ts_code"].astype("string").str.strip()
     output["trade_date"] = _parse_date_series(suspend_d_df["trade_date"], field_name="trade_date")
     _validate_daily_ohlcv_date_range(output["trade_date"], task)
+    output = filter_research_universe_df(output, task, dataset="suspend-d")
     suspend_type = suspend_d_df["suspend_type"].astype("string").str.strip().str.upper()
+    suspend_type = suspend_type.loc[output.index]
 
     if "suspend_timing" in suspend_d_df.columns:
         timing = suspend_d_df["suspend_timing"].astype("string").str.strip()
+        timing = timing.loc[output.index]
         timing_missing_mask = _missing_string_mask(timing)
     else:
-        timing_missing_mask = pd.Series(True, index=suspend_d_df.index)
+        timing_missing_mask = pd.Series(True, index=output.index)
 
     full_day_mask = suspend_type.eq("S") & timing_missing_mask
     return (
@@ -509,11 +567,19 @@ def _extract_full_day_suspensions(suspend_d_df: DataFrame | None, task: ETLTask)
     )
 
 
-def _normalized_ts_code_set(df: DataFrame | None) -> set[str]:
+def _normalized_ts_code_set(
+    df: DataFrame | None,
+    task: ETLTask,
+    *,
+    dataset: str,
+) -> set[str]:
     """从 raw DataFrame 中提取标准化 ts_code 集合。"""
     if df is None or df.empty or "ts_code" not in df.columns:
         return set()
-    return set(df["ts_code"].astype("string").str.strip().dropna().tolist())
+    filtered_df = filter_research_universe_df(df, task, dataset=dataset)
+    if filtered_df.empty:
+        return set()
+    return set(filtered_df["ts_code"].astype("string").str.strip().dropna().tolist())
 
 
 def _float_equal(left: pd.Series, right: pd.Series) -> pd.Series:

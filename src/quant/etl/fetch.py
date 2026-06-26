@@ -12,7 +12,7 @@ from pandas import DataFrame
 from quant.config import QuantConfig
 from quant.etl.etl_model import ETLTask
 from quant.etl.raw import write_raw_csv
-from quant.utils import build_raw_path, is_single_file_raw_dataset
+from quant.utils import build_raw_path
 
 DailyRawFrames = Iterable[tuple[date, DataFrame]]
 RawFetchResult = DataFrame | DailyRawFrames
@@ -28,12 +28,6 @@ def fetch_raw_data(config: QuantConfig, task: ETLTask) -> tuple[Path, ...]:
         task.end_date,
         task.exchange or "-",
     )
-    if is_single_file_raw_dataset(task) and not task.force and not task.dry_run:
-        raw_path = build_raw_path(config.paths.raw_dir, task)
-        if raw_path.is_file():
-            logger.bind(module="etl").info("raw CSV 已存在, 跳过外部接口请求: 路径={}", raw_path)
-            return (raw_path,)
-
     if task.source == "tushare":
         raw_result = _fetch_tushare_raw(config, task)
     else:
@@ -71,7 +65,7 @@ def _write_single_raw_frame(config: QuantConfig, task: ETLTask, df: DataFrame) -
         )
         return path
 
-    if path.exists() and not task.force:
+    if path.exists() and not task.force and not _should_overwrite_single_file_raw(task):
         logger.bind(module="etl").info("raw CSV 已存在, 跳过写入: 路径={}", path)
         return path
 
@@ -85,3 +79,8 @@ def _fetch_tushare_raw(config: QuantConfig, task: ETLTask) -> RawFetchResult:
     from quant.etl.sources.tushare_source import TushareSource
 
     return TushareSource(config).fetch_raw(task)
+
+
+def _should_overwrite_single_file_raw(task: ETLTask) -> bool:
+    """单文件 raw 是最新请求快照,成功拉取后直接覆盖旧文件。"""
+    return task.dataset in {"trade-calendar", "stock-basic"}

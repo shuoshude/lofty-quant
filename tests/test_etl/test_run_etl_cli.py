@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from quant.config import load_config
 from quant.data.db import DuckDBManager
+from quant.etl.daily_pipeline import DailyPipelineResult, DailyPipelineStepResult
 from quant.etl.inspector import MissingDateResult, get_dataset_status
 from quant.logger import setup_logger
 
@@ -675,6 +676,92 @@ def test_missing_command_prints_no_missing_dates(monkeypatch, tmp_path: Path) ->
     assert result.exit_code == 0
     assert "缺失日期数: 0" in result.output
     assert "缺失日期: 无" in result.output
+
+
+def test_daily_command_runs_pipeline_with_explicit_date(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+    calls: list[str] = []
+
+    def fake_daily_pipeline(_config, source, trade_date, *, force=False, dry_run=False):
+        calls.append(f"{source}:{trade_date}:{force}:{dry_run}")
+        return DailyPipelineResult(
+            trade_date=trade_date,
+            source=source,
+            is_open=True,
+            steps=(
+                DailyPipelineStepResult(
+                    name="fetch trade-calendar",
+                    action="fetch",
+                    dataset="trade-calendar",
+                    success=True,
+                    message="raw_files=1",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(run_etl, "run_daily_pipeline", fake_daily_pipeline)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "daily",
+            "--source",
+            "tushare",
+            "--date",
+            "20260625",
+            "--force",
+            "--dry-run",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["tushare:2026-06-25:True:True"]
+    assert "每日管线完成: date=2026-06-25, source=tushare, is_open=True" in result.output
+    assert "步骤: 1, 成功: 1, 失败: 0" in result.output
+
+
+def test_daily_command_uses_today_when_date_is_omitted(monkeypatch, tmp_path: Path) -> None:
+    run_etl = load_run_etl_module()
+    config_dir = make_config_dir(tmp_path)
+    calls: list[date] = []
+
+    def fake_daily_pipeline(_config, source, trade_date, *, force=False, dry_run=False):
+        calls.append(trade_date)
+        return DailyPipelineResult(
+            trade_date=trade_date,
+            source=source,
+            is_open=False,
+            steps=(
+                DailyPipelineStepResult(
+                    name="load stock-basic",
+                    action="load",
+                    dataset="stock-basic",
+                    success=True,
+                    message="row_count=1",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(run_etl, "run_daily_pipeline", fake_daily_pipeline)
+
+    result = CliRunner().invoke(
+        run_etl.app,
+        [
+            "daily",
+            "--source",
+            "tushare",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [date.today()]
+    assert "当日休市,已跳过日频数据" in result.output
+    assert "is_open=False" in result.output
 
 
 def test_daily_ohlcv_status_reads_processed_view(tmp_path: Path) -> None:

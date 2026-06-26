@@ -892,6 +892,29 @@ def test_normalize_daily_ohlcv_df_calculates_limit_status() -> None:
     assert normalized.sort_values("ts_code")["limit_status"].tolist() == [0, 1, 2, 3, 4]
 
 
+def test_normalize_daily_ohlcv_df_filters_research_universe() -> None:
+    raw_df = pd.concat(
+        [
+            make_daily_raw_df(ts_code="000001.SZ", trade_date="20240102"),
+            make_daily_raw_df(ts_code="200011.SZ", trade_date="20240102"),
+            make_daily_raw_df(ts_code="900901.SH", trade_date="20240102"),
+            make_daily_raw_df(ts_code="430476.BJ", trade_date="20211112"),
+            make_daily_raw_df(ts_code="430047.BJ", trade_date="20211115"),
+        ],
+        ignore_index=True,
+    )
+    task = ETLTask(
+        dataset="daily-ohlcv",
+        source="tushare",
+        start_date=date(2021, 11, 12),
+        end_date=date(2024, 1, 2),
+    )
+
+    normalized = normalize_daily_ohlcv_df(raw_df, task).sort_values("ts_code")
+
+    assert normalized["ts_code"].tolist() == ["000001.SZ", "430047.BJ"]
+
+
 def test_normalize_daily_ohlcv_df_appends_full_day_suspension_rows() -> None:
     normalized = normalize_daily_ohlcv_df(
         make_daily_raw_df(ts_code="000001.SZ"),
@@ -950,6 +973,27 @@ def test_normalize_adj_factor_df_maps_to_cumulative_factor() -> None:
             "cumulative_factor": 2.0,
         }
     ]
+
+
+def test_normalize_adj_factor_df_filters_research_universe() -> None:
+    raw_df = pd.concat(
+        [
+            make_adj_factor_raw_df(ts_code="000001.SZ", trade_date="20240102"),
+            make_adj_factor_raw_df(ts_code="900901.SH", trade_date="20240102"),
+            make_adj_factor_raw_df(ts_code="430476.BJ", trade_date="20160104"),
+        ],
+        ignore_index=True,
+    )
+    task = ETLTask(
+        dataset="adj-factor",
+        source="tushare",
+        start_date=date(2016, 1, 4),
+        end_date=date(2024, 1, 2),
+    )
+
+    normalized = normalize_adj_factor_df(raw_df, task)
+
+    assert normalized["ts_code"].tolist() == ["000001.SZ"]
 
 
 def test_normalize_adj_factor_df_rejects_invalid_rows() -> None:
@@ -1097,6 +1141,48 @@ def test_normalize_daily_basic_df_appends_full_day_suspension_rows() -> None:
     assert suspended_row["pe"] == 15.0
     assert suspended_row["pe_ttm"] == 16.0
     assert suspended_row["total_share"] == 200000.0
+
+
+def test_normalize_daily_basic_df_filters_research_universe_and_auxiliary_raw() -> None:
+    task = ETLTask(
+        dataset="daily-basic",
+        source="tushare",
+        start_date=date(2016, 1, 4),
+        end_date=date(2021, 11, 15),
+    )
+    raw_df = pd.concat(
+        [
+            make_daily_basic_raw_df(ts_code="000001.SZ", trade_date="20160104"),
+            make_daily_basic_raw_df(ts_code="430476.BJ", trade_date="20160104"),
+            make_daily_basic_raw_df(ts_code="200011.SZ", trade_date="20160104"),
+            make_daily_basic_raw_df(ts_code="430047.BJ", trade_date="20211115"),
+        ],
+        ignore_index=True,
+    )
+
+    normalized = normalize_daily_basic_df(
+        raw_df,
+        task,
+        suspend_d_df=pd.DataFrame(
+            [
+                {
+                    "ts_code": "430476.BJ",
+                    "trade_date": "20160104",
+                    "suspend_timing": "",
+                    "suspend_type": "S",
+                },
+                {
+                    "ts_code": "900901.SH",
+                    "trade_date": "20160104",
+                    "suspend_timing": "",
+                    "suspend_type": "S",
+                },
+            ]
+        ),
+        previous_records={},
+    ).sort_values("ts_code")
+
+    assert normalized["ts_code"].tolist() == ["000001.SZ", "430047.BJ"]
 
 
 def test_normalize_daily_basic_df_rejects_missing_suspended_previous_record() -> None:

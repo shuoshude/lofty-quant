@@ -378,6 +378,9 @@ class TushareSource:
         logger.bind(module="etl").info("开始加载 Tushare 交易日历 raw: 路径={}", raw_path)
         raw_df = read_raw_csv(raw_path)
         calendar_df = normalize_trade_calendar_df(raw_df, task)
+        calendar_df = calendar_df[
+            calendar_df["cal_date"].between(task.start_date, task.end_date)
+        ].copy()
         logger.bind(module="etl").info(
             "交易日历标准化完成: 行数={}, 起始日期={}, 结束日期={}",
             len(calendar_df.index),

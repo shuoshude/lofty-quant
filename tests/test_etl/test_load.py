@@ -179,6 +179,12 @@ def test_load_trade_calendar_from_raw_csv(tmp_path: Path) -> None:
             [
                 {
                     "exchange": "SSE",
+                    "cal_date": "20231229",
+                    "is_open": 1,
+                    "pretrade_date": "20231228",
+                },
+                {
+                    "exchange": "SSE",
                     "cal_date": "20240102",
                     "is_open": 1,
                     "pretrade_date": "20231229",
@@ -191,6 +197,14 @@ def test_load_trade_calendar_from_raw_csv(tmp_path: Path) -> None:
 
     manager = DuckDBManager(config.paths.database_path, config.paths.processed_dir)
     with manager.session() as conn:
+        out_of_range_count = conn.execute(
+            """
+            SELECT count(*)
+            FROM dim_trade_calendar
+            WHERE exchange = ? AND cal_date = ?
+            """,
+            ["SSE", date(2023, 12, 29)],
+        ).fetchone()[0]
         calendar_row = conn.execute(
             """
             SELECT exchange, cal_date, is_open, pretrade_date
@@ -201,6 +215,7 @@ def test_load_trade_calendar_from_raw_csv(tmp_path: Path) -> None:
         ).fetchone()
 
     assert row_count == 1
+    assert out_of_range_count == 0
     assert calendar_row == ("SSE", date(2024, 1, 2), True, date(2023, 12, 29))
 
 
@@ -420,6 +435,52 @@ def test_load_daily_ohlcv_appends_full_day_suspension_rows(tmp_path: Path) -> No
     assert suspended_row["limit_status"] == -1
 
 
+def test_load_daily_ohlcv_filters_b_shares_before_processed_write(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    trade_date = date(2024, 1, 2)
+    task = daily_task(trade_date, trade_date)
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "trade_date": "20240102",
+                    "open": "10.0",
+                    "high": "12.0",
+                    "low": "9.8",
+                    "close": "10.2",
+                    "pre_close": "10.0",
+                    "change": "0.2",
+                    "pct_chg": "2.0",
+                    "vol": "1000.0",
+                    "amount": "10200.0",
+                },
+                {
+                    "ts_code": "200011.SZ",
+                    "trade_date": "20240102",
+                    "open": "1.0",
+                    "high": "1.2",
+                    "low": "0.8",
+                    "close": "1.1",
+                    "pre_close": "1.0",
+                    "change": "0.1",
+                    "pct_chg": "10.0",
+                    "vol": "100.0",
+                    "amount": "110.0",
+                },
+            ]
+        ),
+    )
+    write_daily_auxiliary_raw(config, trade_date, ts_code="000001.SZ")
+
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(processed_month_path(config, 2024, 1))
+    assert row_count == 1
+    assert df["ts_code"].tolist() == ["000001.SZ"]
+
+
 def test_load_adj_factor_writes_monthly_processed_parquet(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     task = adj_factor_task(date(2024, 1, 2), date(2024, 1, 2))
@@ -469,6 +530,26 @@ def test_load_adj_factor_rejects_missing_raw_and_invalid_rows(tmp_path: Path) ->
     write_adj_factor_raw(config, date(2024, 1, 2), adj_factor="0")
     with pytest.raises(ValueError, match=r"复权因子数据契约校验失败.*cumulative_factor"):
         load_raw_data(config, task)
+
+
+def test_load_adj_factor_filters_historical_bj_before_processed_write(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    task = adj_factor_task(date(2016, 1, 4), date(2016, 1, 4))
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, task),
+        pd.DataFrame(
+            [
+                {"ts_code": "000001.SZ", "trade_date": "20160104", "adj_factor": "2.0"},
+                {"ts_code": "430476.BJ", "trade_date": "20160104", "adj_factor": "1.0"},
+            ]
+        ),
+    )
+
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(adj_factor_month_path(config, 2016, 1))
+    assert row_count == 1
+    assert df["ts_code"].tolist() == ["000001.SZ"]
 
 
 def test_load_daily_basic_writes_monthly_processed_parquet(tmp_path: Path) -> None:
@@ -653,6 +734,39 @@ def test_load_daily_basic_appends_suspended_rows_from_previous_open_day(
     assert suspended_row["pe"] == 15.0
     assert suspended_row["pe_ttm"] == 11.0
     assert suspended_row["total_share"] == 100000.0
+
+
+def test_load_daily_basic_ignores_filtered_suspended_rows_without_previous_record(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    trade_date = date(2016, 1, 4)
+    task = daily_basic_task(trade_date, trade_date)
+    write_daily_basic_raw(config, trade_date, ts_code="000001.SZ")
+    write_daily_basic_auxiliary_raw(
+        config,
+        trade_date,
+        suspend_d_rows=[
+            {
+                "ts_code": "430476.BJ",
+                "trade_date": "20160104",
+                "suspend_timing": "",
+                "suspend_type": "S",
+            },
+            {
+                "ts_code": "200011.SZ",
+                "trade_date": "20160104",
+                "suspend_timing": "",
+                "suspend_type": "S",
+            },
+        ],
+    )
+
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(daily_basic_month_path(config, 2016, 1))
+    assert row_count == 1
+    assert df["ts_code"].tolist() == ["000001.SZ"]
 
 
 def test_load_daily_basic_rejects_missing_suspended_previous_record(

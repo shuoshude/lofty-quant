@@ -10,6 +10,7 @@ from loguru import logger
 
 from quant.config import QuantConfig, load_config
 from quant.etl import ETLTask, fetch_raw_data, load_raw_data
+from quant.etl.daily_pipeline import run_daily_pipeline
 from quant.etl.inspector import find_missing_dates, get_dataset_status
 from quant.logger import setup_logger
 
@@ -246,6 +247,43 @@ def missing(
             typer.echo(missing_date.isoformat())
     else:
         typer.echo("缺失日期: 无")
+
+
+@app.command()
+def daily(
+    source: SourceOption,
+    run_date: Annotated[str | None, typer.Option("--date", help="管线日期")] = None,
+    force: Annotated[bool, typer.Option("--force", help="强制重新拉取并覆盖数据")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="只拉取和校验, 不写入存储")] = False,
+    config_dir: ConfigDirOption = None,
+    environment: EnvironmentOption = None,
+    log_level: LogLevelOption = "INFO",
+) -> None:
+    """执行单日盘后数据管线。"""
+    config = _setup_runtime(config_dir, environment, log_level)
+    trade_date = _parse_optional_date(run_date, "--date") or date.today()
+    try:
+        result = run_daily_pipeline(
+            config,
+            source,
+            trade_date,
+            force=force,
+            dry_run=dry_run,
+        )
+    except (FileNotFoundError, NotImplementedError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    success_count = sum(1 for step in result.steps if step.success)
+    failure_count = len(result.steps) - success_count
+    if not result.is_open:
+        typer.echo(f"当日休市,已跳过日频数据: date={result.trade_date.isoformat()}")
+    typer.echo(
+        "每日管线完成: "
+        f"date={result.trade_date.isoformat()}, "
+        f"source={result.source}, "
+        f"is_open={result.is_open}"
+    )
+    typer.echo(f"步骤: {len(result.steps)}, 成功: {success_count}, 失败: {failure_count}")
 
 
 def _setup_runtime(

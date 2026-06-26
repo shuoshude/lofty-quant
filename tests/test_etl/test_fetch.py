@@ -140,7 +140,10 @@ def test_fetch_raw_data_uses_config_raw_dir(monkeypatch, tmp_path: Path) -> None
     assert expected_path.exists()
 
 
-def test_fetch_raw_data_skips_existing_raw_without_force(monkeypatch, tmp_path: Path) -> None:
+def test_fetch_raw_data_overwrites_single_file_raw_without_force(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     config = load_config(config_dir=make_config_dir(tmp_path))
     task = ETLTask(
         dataset="trade-calendar",
@@ -160,7 +163,7 @@ def test_fetch_raw_data_skips_existing_raw_without_force(monkeypatch, tmp_path: 
     paths = fetch_raw_data(config, task)
 
     assert paths == (expected_path,)
-    assert read_raw_csv(expected_path)["cal_date"].tolist() == ["20240101"]
+    assert read_raw_csv(expected_path)["cal_date"].tolist() == ["20240102"]
 
 
 def test_fetch_raw_data_overwrites_existing_raw_with_force(monkeypatch, tmp_path: Path) -> None:
