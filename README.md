@@ -399,7 +399,7 @@ data/processed/ohlcv/year=2024/month=01/ohlcv_202401.parquet   # 月文件
 data/processed/ohlcv/year=2024/ohlcv_2024.parquet              # 年文件(归档后)
 ```
 
-`load daily-ohlcv` 永远先写月文件;如果同一月文件已存在,会读取旧文件和新 raw 合并,并按 `(ts_code, trade_date)` 去重,新数据覆盖旧数据。执行 load 前必须先准备同日期的 `daily-ohlcv`, `stock-st`, `stk-limit` raw;缺少任一辅助 raw 会直接失败。load 时会统一应用研究层股票范围过滤。processed 中只保存 Tushare `daily` 实际返回的交易行情,不会根据 `suspend-d` 补全天停牌行。
+`load daily-ohlcv` 永远先写月文件;如果同一月文件已存在,会读取旧文件和新 raw 合并,并按 `(ts_code, trade_date)` 去重,新数据覆盖旧数据。执行 load 前必须先准备同日期的 `daily-ohlcv`, `stk-limit` raw;`2016-01-01` 及之后还需要同日期 `stock-st` raw,用于标记 ST 状态。缺少必需辅助 raw 会直接失败。load 时会统一应用研究层股票范围过滤。processed 中只保存 Tushare `daily` 实际返回的交易行情,不会根据 `suspend-d` 补全天停牌行。
 
 ```bash
 uv run python scripts/run_etl.py fetch daily-ohlcv --source tushare --start-date 20240102 --end-date 20240131
@@ -413,7 +413,7 @@ uv run python scripts/run_etl.py load daily-ohlcv --source tushare --start-date 
 - `stock-st`:生成 `is_st`
 - `stk-limit`:结合开收盘价计算 `limit_status`
 
-`is_suspended` 对 Tushare `daily` 实际返回行固定为 `False`;如果需要判断全天停牌事实,后续查询、因子或回测层应读取 `suspend-d` raw。`limit_status` 使用整数编码:`-1=全天停牌(兼容旧数据)`, `0=收盘平盘`, `1=上涨(不含涨停)`, `2=涨停`, `3=下跌(不含跌停)`, `4=跌停`。当前 load 不会生成 `limit_status=-1` 的新增停牌行。`stock-st`, `stk-limit` 辅助 raw 会先过滤历史 `.BJ` 和 B 股,再用于 ST 和涨跌停状态计算。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份,会把该年份月文件合并到年文件,写入成功后删除月文件和空月份目录。不要长期同时保留同一年份的月文件和年文件,否则递归读取时会重复统计。
+`is_suspended` 对 Tushare `daily` 实际返回行固定为 `False`;如果需要判断全天停牌事实,后续查询、因子或回测层应读取 `suspend-d` raw。`limit_status` 使用整数编码:`-1=全天停牌(兼容旧数据)`, `0=收盘平盘`, `1=上涨(不含涨停)`, `2=涨停`, `3=下跌(不含跌停)`, `4=跌停`。当前 load 不会生成 `limit_status=-1` 的新增停牌行。`stock-st` 当前只能获取到 `2016-01-01` 之后的数据;更早历史 OHLCV load 会跳过 `stock-st` 依赖并将 `is_st` 标记为 `False`。`stock-st`, `stk-limit` 辅助 raw 会先过滤历史 `.BJ` 和 B 股,再用于 ST 和涨跌停状态计算。`archive daily-ohlcv --year YYYY` 只允许归档已结束年份,会把该年份月文件合并到年文件,写入成功后删除月文件和空月份目录。不要长期同时保留同一年份的月文件和年文件,否则递归读取时会重复统计。
 
 ### 复权因子 processed 层约定
 
@@ -470,18 +470,52 @@ uv run python scripts/run_etl.py missing stock-st --source tushare --start-date 
 ## 常用命令
 
 ```bash
-make install      # uv sync --all-extras
-make etl-status   # 查看 daily-ohlcv 状态
-make test         # uv run pytest
-make test-fast    # uv run pytest -x --no-cov(失败即停,不跑覆盖率)
-make lint         # uv run ruff check src/ tests/
-make format       # uv run ruff format . && uv run ruff check --fix src/ tests/
-make typecheck    # uv run mypy src/
-make notebook     # uv run jupyter lab --no-browser
-make clean        # 清理缓存目录
+make install       # uv sync --all-extras
+make etl-help      # 查看 scripts/run_etl.py 帮助
+make init-db       # 按当前配置初始化 DuckDB schema 和 Parquet 视图
+make test          # uv run pytest
+make test-fast     # uv run pytest -x --no-cov(失败即停,不跑覆盖率)
+make lint          # uv run ruff check src/ tests/ scripts/ main.py
+make format        # uv run ruff format . && uv run ruff check --fix src/ tests/ scripts/ main.py
+make typecheck     # uv run mypy src/
+make notebook      # uv run jupyter lab --no-browser
+make clean         # 清理缓存目录
 ```
 
-也可以直接运行:
+ETL Makefile 目标与 `scripts/run_etl.py` 保持一致,通过变量传参:
+
+```bash
+# 默认 SOURCE=tushare, DATASET=daily-ohlcv
+make etl-fetch DATASET=trade-calendar START_DATE=20130101 END_DATE=20260630
+make etl-load DATASET=trade-calendar START_DATE=20130101 END_DATE=20260630
+
+make etl-fetch DATASET=stock-basic
+make etl-load DATASET=stock-basic
+
+make etl-fetch DATASET=daily-ohlcv START_DATE=20240102 END_DATE=20240131
+make etl-fetch DATASET=stock-st START_DATE=20240102 END_DATE=20240131
+make etl-fetch DATASET=stk-limit START_DATE=20240102 END_DATE=20240131
+make etl-load DATASET=daily-ohlcv START_DATE=20240102 END_DATE=20240131
+
+make etl-backfill DATASET=adj-factor START_DATE=20240102 END_DATE=20240131
+make etl-archive DATASET=daily-ohlcv YEAR=2023
+make etl-status DATASET=daily-ohlcv
+make etl-missing DATASET=daily-ohlcv START_DATE=20260601 END_DATE=20260630
+make etl-daily DATE=20260625
+```
+
+可选变量:
+
+- `SOURCE`:数据源,默认 `tushare`
+- `DATASET`:数据集,默认 `daily-ohlcv`
+- `START_DATE` / `END_DATE`:日期范围,格式 `YYYYMMDD` 或 `YYYY-MM-DD`
+- `DATE`:每日管线日期,用于 `make etl-daily`
+- `YEAR`:归档年份,用于 `make etl-archive`
+- `FORCE=1`:传递 `--force`
+- `DRY_RUN=1`:传递 `--dry-run`
+- `CONFIG_DIR` / `ENVIRONMENT` / `LOG_LEVEL`:传递配置目录、环境和日志级别
+
+也可以直接运行质量检查命令:
 
 ```bash
 uv run pytest
@@ -508,7 +542,7 @@ uv run mypy src/
 - Tushare `stock-st`, `stk-limit`, `suspend-d` raw-only 日频辅助数据 fetch
 - 日期级缺失检查命令 `missing`
 - 盘后单日数据管线命令 `daily`
-- 基础测试覆盖(189 个测试,覆盖率 92%)
+- 基础测试覆盖(190 个测试,覆盖率 92%)
 
 待实现:
 

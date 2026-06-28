@@ -293,6 +293,37 @@ def test_load_daily_ohlcv_rejects_missing_auxiliary_raw(tmp_path: Path) -> None:
         load_raw_data(config, daily_task(date(2024, 1, 2), date(2024, 1, 2)))
 
 
+def test_load_daily_ohlcv_before_2016_does_not_require_stock_st_raw(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    trade_date = date(2015, 12, 31)
+    task = daily_task(trade_date, trade_date)
+    write_daily_raw(config, trade_date, close="10.2", write_auxiliary=False)
+
+    stk_limit_task = task.model_copy(update={"dataset": "stk-limit"})
+    write_raw_csv(
+        build_raw_path(config.paths.raw_dir, stk_limit_task),
+        pd.DataFrame(
+            [
+                {
+                    "trade_date": "20151231",
+                    "ts_code": "000001.SZ",
+                    "pre_close": 10.0,
+                    "up_limit": 12.0,
+                    "down_limit": 8.0,
+                }
+            ]
+        ),
+    )
+
+    row_count = load_raw_data(config, task)
+
+    df = pd.read_parquet(processed_month_path(config, 2015, 12))
+    assert row_count == 1
+    assert df["ts_code"].tolist() == ["000001.SZ"]
+    assert df["is_st"].tolist() == [False]
+    assert df["limit_status"].tolist() == [1]
+
+
 def test_load_daily_ohlcv_rejects_missing_column(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     raw_path = build_raw_path(config.paths.raw_dir, daily_task(date(2024, 1, 2), date(2024, 1, 2)))

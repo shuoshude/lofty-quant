@@ -47,6 +47,7 @@ TUSHARE_REQUEST_SLEEP_SECONDS = 0.2
 TRADE_CALENDAR_EXCHANGE = "SSE"
 MISSING_TRADE_CALENDAR_MESSAGE = "请先加载交易日历后再拉取日线行情"
 STOCK_BASIC_LIST_STATUSES = ("L", "D", "P")
+STOCK_ST_AVAILABLE_START_DATE = date(2016, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -530,7 +531,20 @@ class TushareSource:
     ) -> DataFrame:
         """按数据集标准化日频 raw DataFrame。"""
         if spec.dataset == "daily-ohlcv":
-            stock_st_df = self._read_same_day_raw(raw_path, task, "stock-st")
+            trade_date = parse_daily_raw_file_date(raw_path, task)
+            if trade_date is None:
+                raise ValueError(f"无法从日频 raw 文件名解析交易日: {raw_path}")
+
+            if trade_date >= STOCK_ST_AVAILABLE_START_DATE:
+                stock_st_df = self._read_same_day_raw(raw_path, task, "stock-st")
+            else:
+                logger.bind(module="etl").info(
+                    "交易日早于 stock-st 可用起始日, 跳过 ST 辅助 raw: "
+                    "trade_date={}, 起始日={}",
+                    trade_date,
+                    STOCK_ST_AVAILABLE_START_DATE,
+                )
+                stock_st_df = None
             stk_limit_df = self._read_same_day_raw(raw_path, task, "stk-limit")
             return normalize_daily_ohlcv_df(
                 raw_df,
