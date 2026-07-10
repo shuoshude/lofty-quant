@@ -14,6 +14,28 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "akquant"
+version = "0.2.46"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "plotly" },
+    { name = "polars" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/de/da3160f583498df688d4ec3fd1bfc9a7dd010c1bf2f402abfb5245173221/akquant-0.2.46.tar.gz", hash = "sha256:c1206b289cefb6455575b67d48c5ead320af2991fb0f3fccf624a26e7f556437", size = 1540536, upload-time = "2026-06-22T08:45:29.06Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/bd/ce1f2d853f37b8679f5cebeabfab808ea697bf2bf9a71911ddebf129732d/akquant-0.2.46-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:075a9a470d86cf575b757fc6ad5fc0b054a686d645da09d6e2fb750533fdd032", size = 5767191, upload-time = "2026-06-22T08:45:19.03Z" },
+    { url = "https://files.pythonhosted.org/packages/64/17/355184df59762dee5e63c8f5b2d4a228e2d98747639d5588c3a93117a67f/akquant-0.2.46-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c1437a40d672a3961745f3a6b3f9e166bed871dc94d5671438b35c2258fc4981", size = 6073533, upload-time = "2026-06-22T08:45:21.553Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/8a/1462dd2b607392892185921e3edc68e6bad7202e73ab168478b84e867b81/akquant-0.2.46-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2e20d9b31ae43b2e2fdbbccc8d3b0c9b5385036412b3c60e2b94d87a95b854ec", size = 6489751, upload-time = "2026-06-22T08:45:23.409Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/e4/fbda75800d33b7b6235396cbc14db598b2c58d8cb39201805795ac3e616f/akquant-0.2.46-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:6b0b57ea78447558f377c7df0c65f6799ec66abbf496740bfe87975a0a747e79", size = 6286781, upload-time = "2026-06-22T08:45:25.316Z" },
+    { url = "https://files.pythonhosted.org/packages/99/aa/9ff01f1e6749d596ba7b326ce493d8fe2881b8dd74b50c28c40ee5281a71/akquant-0.2.46-cp310-abi3-win_amd64.whl", hash = "sha256:ece4323b91436e70e72fe01766da0d5e429705aeba34e7762403af8eb3df86be", size = 6403246, upload-time = "2026-06-22T08:45:27.309Z" },
+]
+
+[[package]]
 name = "akracer"
 version = "0.0.14"
 source = { registry = "https://pypi.org/simple" }
@@ -1167,6 +1189,7 @@ name = "lofty-quant"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "akquant" },
     { name = "akshare" },
     { name = "duckdb" },
     { name = "httpx" },
@@ -1202,6 +1225,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "akquant", specifier = ">=0.2.46" },
     { name = "akshare", specifier = ">=1.18.64" },
     { name = "duckdb", specifier = ">=0.10" },
     { name = "httpx", specifier = ">=0.27" },

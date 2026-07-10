@@ -25,4 +25,4 @@ notebooks/data_exploration/
 # Runtime logs
 log/
 .vscode/
-
+aqlearn/

@@ -28,6 +28,7 @@ dependencies = [
     "pydantic-settings>=2.14.1",
     "akshare>=1.18.64",
     "tushare>=1.4.29",
+    "akquant>=0.2.46",
 ]
 
 [project.optional-dependencies]
