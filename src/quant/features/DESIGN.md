@@ -268,14 +268,9 @@ name
 version
 category
 lookback_days
-input_view
-input_fields
-output_unit
+required_fields
 higher_is_better
-frequency
 min_periods
-null_policy
-data_lag_days
 description
 ```
 
@@ -285,15 +280,14 @@ description
 - `version`: 单独存放,例如 `v1`。
 - `category`: `technical`, `fundamental`, `alternative`。
 - `lookback_days`: 计算所需最大历史交易日数量。
-- `input_view`: 主要依赖的数据视图,例如 `v_daily_hfq`。
-- `input_fields`: 计算所需字段。
-- `output_unit`: `ratio`, `rank`, `log_value`, `raw` 等。
+- `required_fields`: 计算所需的逻辑字段,例如 `hfq_close`,不绑定具体存储视图。
 - `higher_is_better`: 因子排序方向。若方向需要由研究决定,可以为 `None`。
-- `frequency`: 第一版固定为 `daily`。
 - `min_periods`: rolling 计算最少有效观测数。
-- `null_policy`: `keep_null`, `drop`, `fill` 等。第一版默认 `keep_null`。
-- `data_lag_days`: 数据可用延迟。日线收盘后因子通常为 0,财务公告类因子后续必须显式设置。
 - `description`: 面向研究者的简短说明。
+
+第一版固定使用日频并保留缺失值,因此不在元数据中重复声明 `frequency` 和
+`null_policy`。数据读取位置由 Repository/Pipeline 根据 `required_fields` 决定,不使用单个
+`input_view` 绑定存储实现。`output_unit` 和财务数据可用时间模型等到出现实际消费者后再引入。
 
 ## 7. 存储设计
 
@@ -339,7 +333,7 @@ data/processed/factors/year=YYYY/factors_YYYY.parquet
 | `return_5d` | technical | `hfq_close` | `False` | 5 日收益。短期反转研究时由评估或策略反向排序,不要把原始值乘以 -1 后落盘 |
 | `momentum_20d` | technical | `hfq_close` | `True` 或 `None` | 20 日动量收益 |
 | `volatility_20d` | technical/risk | `hfq_close` | `False` | 20 日日对数收益率波动率,第一版不年化 |
-| `log_amount_mean_20d` | technical/liquidity | `amount` | `True` 或 `None` | 20 日平均成交额取对数,比成交量更适合跨股价比较 |
+| `log_amount_mean_20d` | alternative/liquidity | `amount` | `True` 或 `None` | 20 日平均成交额取对数,比成交量更适合跨股价比较 |
 | `amihud_20d` | alternative/liquidity | `hfq_close`, `amount` | `False` | 非流动性度量,`mean(abs(ret) / amount)` |
 
 公式约定:
@@ -664,7 +658,7 @@ factor_autocorr_1d = corr(factor_value_t, factor_value_t-1)
 - 定义因子描述模型。
 - 定义因子注册和查询方式。
 - 先注册空的或占位的首批因子元数据。
-- 元数据包含 `higher_is_better`, `min_periods`, `null_policy`, `data_lag_days` 等字段。
+- 元数据只包含身份、计算依赖和研究方向所需的 8 个字段。
 
 建议修改:
 
@@ -687,7 +681,7 @@ tests/test_features/test_registry.py
 - 可以按因子名获取定义。
 - 重复注册同名同版本因子会失败。
 - 查询不存在的因子会给出清晰错误。
-- 首批因子的 `lookback_days` 和 `input_fields` 可被测试断言。
+- 首批因子的 `lookback_days` 和 `required_fields` 可被测试断言。
 - 首批因子的方向字段可被测试断言,例如 `return_5d.higher_is_better = False`。
 
 ### Step 2: 因子存储能力
