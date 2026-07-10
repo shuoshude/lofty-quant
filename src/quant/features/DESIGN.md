@@ -233,7 +233,7 @@ factor_version
 - `factor_value`: 当前默认可消费因子值。允许缺失,但写入前应统一为 Parquet 可表达的 null/NaN。
 - `factor_version`: 因子定义版本,例如 `v1`。
 
-为了支持 raw 和 processed 并存,后续可以在 Parquet 中增加可选列:
+为了支持 raw 和 processed 并存,第一版 Parquet 固定保留 4 个研究列:
 
 ```text
 raw_value
@@ -242,6 +242,7 @@ quality_status
 created_at
 ```
 
+这 4 列对调用方是可选输入: 未提供时由存储层补为 null,但输出文件始终保留完整九列。
 推荐语义:
 
 - 第一版 raw-only 阶段: `factor_value = raw_value`。
@@ -307,12 +308,18 @@ data/processed/factors/year=YYYY/factors_YYYY.parquet
 
 写入规则:
 
+- 公共入口为 `write_factor_results(processed_dir, df)`,其中 `processed_dir` 是
+  `data/processed` 根目录。
 - 使用现有日频 processed 写入思路,按 `trade_date` 所在年月切分。
 - 每次写入前读取同月旧文件,按唯一键去重。
 - 新结果覆盖旧结果。
-- 写入完成后可以调用 `DuckDBManager.refresh_views()` 刷新 `v_factors`。
+- 空 DataFrame 不写文件;非空输入缺少 `FACTOR_COLUMNS` 或包含未支持字段时明确报错。
+- 输出固定包含 `FACTOR_COLUMNS` 和 `raw_value`, `processed_value`, `quality_status`,
+  `created_at`;缺失的研究列写为 null。
+- 存储层不自动刷新 DuckDB。Pipeline 在写入后负责调用
+  `DuckDBManager.refresh_views()` 刷新 `v_factors`。
 - 不写 DuckDB 实体表,继续使用 Parquet 作为事实源。
-- Parquet 可以包含 `raw_value`, `processed_value`, `quality_status`, `created_at` 等可选列,但必须始终保留 `FACTOR_COLUMNS` 兼容列。
+- DuckDB 读取 Hive 路径时自动暴露的 `year`, `month` 分区列属于预期行为。
 
 不建议第一版采用:
 
@@ -713,6 +720,7 @@ tests/test_features/test_storage.py
 - 同一唯一键重复写入时新值覆盖旧值。
 - 空结果不写文件。
 - 缺少 `FACTOR_COLUMNS` 字段时报错。
+- 未支持的额外字段时报错,不静默丢弃。
 - 额外列存在时不会破坏 `v_factors` 注册和 `get_factors()` 查询。
 
 ### Step 3: Repository 面板读取
