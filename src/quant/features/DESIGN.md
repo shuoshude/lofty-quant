@@ -729,6 +729,16 @@ tests/test_features/test_storage.py
 
 - 给 features 提供统一输入数据读取入口。
 
+公开接口:
+
+```text
+get_daily_panel(start, end, fields, adjustment="hfq") -> polars.DataFrame
+```
+
+- `fields` 只声明计算需要的业务字段,输出自动包含 `ts_code`, `trade_date`。
+- 第一版 `adjustment` 只支持 `none`, `hfq`;拒绝使用最新口径 QFQ 构造历史研究面板。
+- `none` 读取 `v_daily_ohlcv`,`hfq` 读取 `v_daily_hfq`。
+
 建议修改:
 
 ```text
@@ -747,7 +757,9 @@ tests/test_data/test_repository.py
 - 可以读取指定日期范围和字段。
 - 字段名校验复用或对齐现有 `_validate_fields`。
 - `adjustment="hfq"` 时能读取后复权字段。
+- 请求当前复权视图不存在的字段时给出明确错误。
 - 返回结果按 `ts_code, trade_date` 稳定排序。
+- 返回 Polars DataFrame,避免全市场面板转换为 `list[dict]`。
 
 ### Step 4: 首批技术因子纯计算
 

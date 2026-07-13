@@ -40,6 +40,122 @@ def test_repository_returns_hfq_daily_bars(tmp_path: Path) -> None:
     assert [row["hfq_close"] for row in rows] == pytest.approx([15.75, 24.0])
 
 
+def test_repository_returns_hfq_daily_panel_as_polars_dataframe(tmp_path: Path) -> None:
+    """全市场 HFQ 面板自动包含键并按证券和日期排序。"""
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        repository = QuantRepository(conn)
+        panel = repository.get_daily_panel(
+            date(2024, 1, 2),
+            date(2024, 1, 3),
+            ["hfq_close", "amount"],
+            adjustment="hfq",
+        )
+
+    assert isinstance(panel, pl.DataFrame)
+    assert panel.columns == ["ts_code", "trade_date", "hfq_close", "amount"]
+    assert panel.to_dicts() == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": date(2024, 1, 2),
+            "hfq_close": 15.75,
+            "amount": 10500.0,
+        },
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": date(2024, 1, 3),
+            "hfq_close": 24.0,
+            "amount": 18000.0,
+        },
+        {
+            "ts_code": "000002.SZ",
+            "trade_date": date(2024, 1, 2),
+            "hfq_close": 5.1,
+            "amount": 10200.0,
+        },
+    ]
+
+
+def test_repository_daily_panel_supports_unadjusted_fields_without_duplicate_keys(
+    tmp_path: Path,
+) -> None:
+    """未复权面板返回原始字段且自动去除重复键列。"""
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        repository = QuantRepository(conn)
+        panel = repository.get_daily_panel(
+            date(2024, 1, 2),
+            date(2024, 1, 2),
+            ["trade_date", "close", "ts_code"],
+            adjustment="none",
+        )
+
+    assert panel.columns == ["ts_code", "trade_date", "close"]
+    assert panel["close"].to_list() == [10.5, 5.1]
+
+
+def test_repository_daily_panel_rejects_fields_unavailable_for_adjustment(
+    tmp_path: Path,
+) -> None:
+    """研究面板在查询前拒绝当前复权视图不存在的字段。"""
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        repository = QuantRepository(conn)
+        with pytest.raises(
+            ValueError,
+            match=r"研究面板字段不适用于 adjustment=none: \['hfq_close'\]",
+        ):
+            repository.get_daily_panel(
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                ["hfq_close"],
+                adjustment="none",
+            )
+
+
+@pytest.mark.parametrize(
+    ("fields", "error_message"),
+    [
+        ([], "fields 不能为空"),
+        (["close; DROP TABLE v_daily_ohlcv"], "无效的字段名"),
+    ],
+)
+def test_repository_daily_panel_validates_requested_field_names(
+    tmp_path: Path,
+    fields: list[str],
+    error_message: str,
+) -> None:
+    """研究面板复用 Repository 的字段名安全校验。"""
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        repository = QuantRepository(conn)
+        with pytest.raises(ValueError, match=error_message):
+            repository.get_daily_panel(
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                fields,
+            )
+
+
+def test_repository_daily_panel_rejects_qfq_adjustment(tmp_path: Path) -> None:
+    """研究面板拒绝可能引入历史口径偏差的 QFQ 模式。"""
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        repository = QuantRepository(conn)
+        with pytest.raises(ValueError, match="研究面板不支持的复权模式: qfq"):
+            repository.get_daily_panel(
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                ["close"],
+                adjustment="qfq",  # type: ignore[arg-type]
+            )
+
+
 def test_repository_qfq_as_of_date_does_not_use_future_factor(tmp_path: Path) -> None:
     manager = initialized_manager(tmp_path)
 

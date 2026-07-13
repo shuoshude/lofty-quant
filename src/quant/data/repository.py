@@ -7,7 +7,10 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any, Literal, cast
 
+import polars as pl
 from duckdb import DuckDBPyConnection
+
+from quant.data.fields import DAILY_OHLCV_COLUMNS
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_CROSS_SECTION_FIELDS = (
@@ -21,6 +24,25 @@ DEFAULT_CROSS_SECTION_FIELDS = (
     "limit_status",
 )
 AdjustmentMode = Literal["none", "hfq", "qfq"]
+PanelAdjustmentMode = Literal["none", "hfq"]
+HFQ_DAILY_PANEL_FIELDS = (
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "cumulative_factor",
+    "hfq_open",
+    "hfq_high",
+    "hfq_low",
+    "hfq_close",
+    "volume",
+    "amount",
+    "is_suspended",
+    "is_st",
+    "limit_status",
+)
 
 
 class QuantRepository:
@@ -57,6 +79,29 @@ class QuantRepository:
             """,
             [ts_code, start, end],
         )
+
+    def get_daily_panel(
+        self,
+        start: date,
+        end: date,
+        fields: Sequence[str],
+        *,
+        adjustment: PanelAdjustmentMode = "hfq",
+    ) -> pl.DataFrame:
+        """返回全市场指定日期区间的日频研究面板。"""
+        source = _daily_panel_source(adjustment)
+        requested_fields = _validate_daily_panel_fields(fields, adjustment)
+        selected_fields = list(dict.fromkeys(["ts_code", "trade_date", *requested_fields]))
+        result = self._conn.execute(
+            f"""
+            SELECT {", ".join(selected_fields)}
+            FROM {source}
+            WHERE trade_date BETWEEN ? AND ?
+            ORDER BY ts_code, trade_date
+            """,
+            [start, end],
+        )
+        return result.pl()
 
     def _get_qfq_daily_bars(
         self,
@@ -235,3 +280,25 @@ def _daily_bar_source(adjustment: AdjustmentMode) -> str:
     if adjustment == "qfq":
         return "v_daily_qfq_latest"
     raise ValueError(f"不支持的复权模式: {adjustment}")
+
+
+def _daily_panel_source(adjustment: PanelAdjustmentMode) -> str:
+    """返回研究面板复权模式对应的 DuckDB 视图。"""
+    if adjustment == "none":
+        return "v_daily_ohlcv"
+    if adjustment == "hfq":
+        return "v_daily_hfq"
+    raise ValueError(f"研究面板不支持的复权模式: {adjustment}")
+
+
+def _validate_daily_panel_fields(
+    fields: Sequence[str],
+    adjustment: PanelAdjustmentMode,
+) -> list[str]:
+    """校验研究面板字段在指定复权视图中可用。"""
+    validated_fields = _validate_fields(fields)
+    available_fields = DAILY_OHLCV_COLUMNS if adjustment == "none" else HFQ_DAILY_PANEL_FIELDS
+    unavailable_fields = [field for field in validated_fields if field not in available_fields]
+    if unavailable_fields:
+        raise ValueError(f"研究面板字段不适用于 adjustment={adjustment}: {unavailable_fields}")
+    return validated_fields
