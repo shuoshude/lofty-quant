@@ -58,7 +58,7 @@ ts_code | trade_date | factor_name | factor_value | factor_version
 - `trade_date = T` 的因子值,只使用 `T` 日收盘后已知的数据。
 - `T` 日因子最早只能用于 `T+1` 交易决策。
 - 技术因子使用后复权价格或显式 as-of 复权逻辑,不能使用最新口径前复权价格直接回看历史。
-- rolling 因子需要 warmup 数据,但最终只输出用户请求区间内的因子。
+- rolling 因子计算器保留 warmup 行并以 null 表达观测不足;后续 Pipeline 再把最终结果裁剪到用户请求区间。
 - 因子校验和 RankIC 使用未来收益时,未来收益只能用于分析输出,不能写回因子结果。
 - 如果按 `T` 日收盘后出信号、`T+1` 日开盘成交来评估,则 5 日未来收益标签应使用 `hfq_open(T+6) / hfq_open(T+1) - 1`,而不是简单使用 `close(T+5) / close(T) - 1`。
 
@@ -74,11 +74,15 @@ Calculator -> Processor -> Store -> Evaluator
 
 ### Calculator
 
-Calculator 只负责计算原始因子值。输入是历史行情、估值或其他研究面板,输出是:
+Calculator 只负责计算原始因子值。输入是历史行情、估值或其他研究面板。首个
+`return_5d` 切片直接输出兼容存储层的 long format:
 
 ```text
-ts_code | trade_date | factor_name | factor_version | raw_value
+ts_code | trade_date | factor_name | factor_value | factor_version | raw_value
 ```
+
+raw-only 阶段 `factor_value = raw_value`;这只是当前可消费值的兼容列,不代表
+Calculator 执行了截面处理。
 
 Calculator 不负责:
 
@@ -405,7 +409,6 @@ start_date
 end_date
 factor_version
 dry_run
-overwrite
 processor
 ```
 
@@ -419,15 +422,16 @@ min_history_days
 neutralization
 ```
 
-第一版建议 `processor` 只支持以下固定枚举:
+Step 5 的 `processor` 只支持以下固定枚举:
 
 ```text
 raw
 rank_pct
-zscore
 ```
 
-`raw` 表示不处理,`factor_value = raw_value`。`rank_pct` 表示按交易日做截面百分位排名,通常更稳健,适合作为第一版默认处理方式。`zscore` 表示按交易日做截面 Z-score。中性化等扩展参数先不要实现,避免 pipeline 提前复杂化。
+`raw` 是 Step 5 默认值,表示 `factor_value = raw_value`。`rank_pct` 表示按交易日
+对有效原始值做平均百分位排名。Z-score、中性化等处理延后实现,避免 Pipeline
+提前复杂化。
 
 ### 9.3 计算摘要
 
@@ -521,11 +525,10 @@ factor_autocorr_1d
 
 Evaluator 需要生成未来收益标签,但标签只用于评估,不写入因子缓存。
 
-推荐第一版优先生成:
+第一版只生成:
 
 ```text
 forward_return_5d = hfq_open(T+6) / hfq_open(T+1) - 1
-forward_return_20d = hfq_open(T+21) / hfq_open(T+1) - 1
 ```
 
 该定义对应:
@@ -533,9 +536,14 @@ forward_return_20d = hfq_open(T+21) / hfq_open(T+1) - 1
 ```text
 T 日收盘后计算因子
 T+1 日开盘买入
-持有 5 或 20 个交易日
-T+6 或 T+21 日开盘卖出
+持有 5 个交易日
+T+6 日开盘卖出
 ```
+
+`T+1` 和 `T+6` 必须由 SSE 交易日历映射,不能按个股已有行情行做
+`shift`。个股在目标交易日停牌、缺行或开盘价缺失时,该标签为 null;请求区间
+末端未来日历不足时同样保留 null。标签只在内存中参与研究评价,不保存到
+Parquet,也不增加到因子表。
 
 如果后续策略改为下一日收盘成交,标签也必须随交易假设同步调整。
 
@@ -543,10 +551,11 @@ T+6 或 T+21 日开盘卖出
 
 第一版 IC/RankIC 规则:
 
-- 使用 `T` 日因子值和 `forward_return_5d` 或 `forward_return_20d`。
+- 使用 `T` 日因子值和 `forward_return_5d`。
 - 收益使用后复权开盘价构造。
-- 每个交易日做截面 Spearman 相关。
-- 同时可以输出 Pearson IC,但 RankIC 是第一版主要指标。
+- 每个交易日分别计算截面 Pearson IC 和 Spearman RankIC,并列值使用平均排名。
+- 每个有效截面至少需要 5 个因子和收益都有效的股票;样本不足或任一序列无方差时跳过该日期。
+- 日度指标先按日期计算,再跨日期等权平均;RankIC 标准差使用样本标准差。
 - 只输出汇总,不把未来收益写入因子缓存。
 
 如果某个日期样本太少,跳过该日期并在摘要中报告有效日期数。
@@ -555,7 +564,8 @@ T+6 或 T+21 日开盘卖出
 
 - 每个交易日按 `factor_value` 或指定 `processed_value` 分为 5 组。
 - 分别输出 Q1 到 Q5 的平均未来收益。
-- 输出高低组多空收益。多空方向由 `higher_is_better` 决定。
+- 输出方向多空收益。`higher_is_better=True` 使用 `Q5-Q1`,False 使用
+  `Q1-Q5`,方向未知时返回 `None`。
 - 检查收益是否大致单调,但第一版不要把单调性作为硬性通过条件。
 
 换手率规则:
@@ -564,7 +574,9 @@ T+6 或 T+21 日开盘卖出
 turnover_t = 0.5 * sum(abs(weight_t - weight_t-1))
 ```
 
-第一版可以先用等权分组权重估算最高组或多空组合的换手率,不必接入完整回测引擎。
+第一版使用元数据方向最优的单边组估算换手率:高值优先评价 Q5,低值优先评价
+Q1。组内等权,只在相邻有效评价日之间计算;方向未知或有效日期少于两个时返回
+`None`,不接入完整回测引擎。
 
 因子自相关规则:
 
@@ -573,6 +585,11 @@ factor_autocorr_1d = corr(factor_value_t, factor_value_t-1)
 ```
 
 它用于判断因子稳定性和预估组合换手。
+
+覆盖率分母是请求区间内每日 `v_daily_hfq` 的市场行数,分子是同日非空且有限的
+`factor_value` 数量。因子缺失率和分布统计只基于已存因子表,且分布忽略 null、
+NaN 和无穷值。所有因样本不足、零方差、方向未知或未来行情不足而无法计算的
+浮点指标统一返回 `None`,不返回 NaN;`rank_ic_5d_count` 记录实际有效评价日数。
 
 ## 12. CLI 设计
 
@@ -761,12 +778,37 @@ tests/test_data/test_repository.py
 - 返回结果按 `ts_code, trade_date` 稳定排序。
 - 返回 Polars DataFrame,避免全市场面板转换为 `list[dict]`。
 
-### Step 4: 首批技术因子纯计算
+### Step 4: `return_5d` 最小因子闭环
 
 目标:
 
-- 实现 3 到 5 个首批技术因子。
-- 因子函数只做 raw value 计算,不做 IO 和截面处理。
+- 首次只实现 `return_5d`,验证单因子从面板读取到 Repository 回查的完整链路。
+- 因子函数保持纯 Polars 计算,不做 IO 和截面处理。
+
+公开计算接口:
+
+```text
+compute_return_5d(panel: polars.DataFrame) -> polars.DataFrame
+```
+
+输入必须包含 `ts_code`, `trade_date`, `hfq_close`,输出固定为:
+
+```text
+ts_code | trade_date | factor_name | factor_value | factor_version | raw_value
+```
+
+公式和输出语义:
+
+```text
+raw_value = hfq_close(T) / hfq_close(T-5) - 1
+factor_value = raw_value
+factor_name = return_5d
+factor_version = v1
+```
+
+计算前按 `ts_code, trade_date` 排序,并按股票独立位移。每只股票前 5 个观测
+保留在输出中,`raw_value` 和 `factor_value` 为 null;由后续 Pipeline 负责按请求
+区间裁剪 warmup 行。
 
 建议修改:
 
@@ -778,25 +820,28 @@ tests/test_features/test_technical.py
 边界:
 
 - 不读取配置。
-- 不连接 DuckDB。
-- 不写文件。
+- 计算函数不连接 DuckDB、不写文件。
 - 不做中性化。
 - 不做未来收益。
-- 不把短反转直接乘以 -1 后落盘,优先实现 `return_5d` 并通过元数据表达方向。
+- 不生成 `quality_status`,不做去极值、排名或缺失填充。
+- 不把短反转直接乘以 -1,通过元数据 `higher_is_better=False` 表达评价方向。
+- 不实现 `momentum_20d`, `volatility_20d`, `log_amount_mean_20d` 或 `amihud_20d`。
 
 验收:
 
-- 小样本数据可以精确断言 `return_5d`, `momentum_20d`, `volatility_20d`。
-- rolling warmup 不足时输出缺失或跳过,行为固定。
+- 小样本数据可以精确断言 `return_5d` 公式和前 5 行 null。
 - 输入顺序打乱后,输出仍按 `ts_code, trade_date` 正确计算。
-- 不跨股票 rolling。
-- `amount <= 0` 时流动性和 Amihud 因子输出缺失或 `invalid_value`,不参与 rolling 均值。
+- 两只股票交错输入时不跨股票位移。
+- 缺少必需字段时错误包含具体字段名。
+- 集成测试打通 `get_daily_panel -> compute_return_5d -> to_pandas ->`
+  `write_factor_results -> QuantRepository.get_factors`。
 
 ### Step 5: 因子计算 Pipeline
 
 目标:
 
-- 串起 registry、Repository、Calculator、Processor、校验、storage。
+- 先用 `return_5d:v1` 串起 registry、Repository、Calculator、Processor、校验和 storage。
+- 提供可直接调用的 `run_factor_pipeline()` 和不可变 `FactorRunSummary`。
 
 建议修改:
 
@@ -809,10 +854,12 @@ tests/test_features/test_pipeline.py
 边界:
 
 - 只支持日频股票因子。
-- 只支持首批技术因子。
+- 只执行已有 Calculator 的 `return_5d:v1`;只有元数据的因子明确报未实现。
+- Processor 只支持 `raw` 和 `rank_pct`,默认使用 `raw`。
 - 不支持行业/市值中性化。
 - 不支持自动调度。
 - 不支持并行。
+- 不实现 CLI、Z-score 或研究评价。
 
 验收:
 
@@ -823,6 +870,8 @@ tests/test_features/test_pipeline.py
 - `processor=raw` 时 `factor_value = raw_value`。
 - `processor=rank_pct` 时按交易日截面输出百分位排名。
 - 写入后 `QuantRepository.get_factors()` 能查到结果。
+- `dry_run=True` 时仍完成计算、处理和校验,但不写入或刷新视图。
+- Pipeline 根据交易日历精确读取 warmup,交易日历不足时直接失败。
 
 ### Step 6: Validation
 
@@ -840,9 +889,12 @@ tests/test_features/test_validation.py
 
 边界:
 
-- 只读取已计算因子和后复权收盘价。
+- 只读取已计算因子、SSE 交易日历和后复权开盘价。
+- 第一版只实现 `forward_return_5d`,不实现 `forward_return_20d`。
+- 固定最少截面样本数为 5。
 - 不产生策略信号。
 - 不写因子结果。
+- 不保存未来收益标签或评价报告文件。
 - 不负责画图。
 - 标签只用于评估,不写入 `data/processed/factors`。
 
@@ -851,8 +903,9 @@ tests/test_features/test_validation.py
 - 能输出缺失率、覆盖率、分布统计。
 - 能用固定小数据计算 `forward_return_5d`。
 - 能用固定小数据计算 RankIC 和五分组收益。
-- 能估算等权最高组或多空组合换手率。
+- 能按 `higher_is_better` 估算方向最优单边五分组组合的等权换手率。
 - 样本不足时跳过对应日期并报告有效样本数。
+- 不可用的浮点指标使用 `None`,不输出 NaN。
 - 不把未来收益写入 `data/processed/factors`。
 
 ### Step 7: CLI 和 Makefile 入口

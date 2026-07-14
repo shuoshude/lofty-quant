@@ -213,6 +213,28 @@ class QuantRepository:
             params,
         )
 
+    def get_factor_panel(
+        self,
+        start: date,
+        end: date,
+        factor_name: str,
+        *,
+        factor_version: str = "v1",
+    ) -> pl.DataFrame:
+        """返回单个因子在指定日期区间的 long format 面板。"""
+        result = self._conn.execute(
+            """
+            SELECT ts_code, trade_date, factor_name, factor_value, factor_version
+            FROM v_factors
+            WHERE trade_date BETWEEN ? AND ?
+              AND factor_name = ?
+              AND factor_version = ?
+            ORDER BY ts_code, trade_date
+            """,
+            [start, end, factor_name, factor_version],
+        )
+        return result.pl()
+
     def get_trade_calendar(
         self,
         start: date,

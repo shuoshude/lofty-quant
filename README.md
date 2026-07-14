@@ -1,6 +1,6 @@
 # lofty-quant
 
-个人 A 股量化交易系统。已完成项目骨架、多层 TOML 配置、Loguru 日志,以及 `Tushare -> raw CSV -> DuckDB/Parquet` 的交易日历、证券主数据、日线行情、复权因子、每日指标和 raw-only 辅助数据轻量 ETL 链路;因子、策略、回测等量化模块按实际使用逐步实现。
+个人 A 股量化交易系统。已完成项目骨架、多层 TOML 配置、Loguru 日志,以及 `Tushare -> raw CSV -> DuckDB/Parquet` 的交易日历、证券主数据、日线行情、复权因子、每日指标和 raw-only 辅助数据轻量 ETL 链路;因子模块已具备首个计算、存储和验证闭环,策略与回测等模块按实际使用逐步实现。
 
 ## 技术栈
 
@@ -34,12 +34,12 @@
 │   ├── etl/                          # 轻量 ETL(fetch/load/daily/processed/storage)
 │   │   ├── processed.py              # 日频 processed Parquet 写入和归档
 │   │   └── sources/                  # Tushare 数据源适配器和字段标准化
-│   ├── features/                     # 因子工程(占位)
+│   ├── features/                     # 因子计算、处理、存储与研究验证
 │   ├── strategy/                     # 策略层(占位)
 │   ├── backtest/                     # 回测引擎(占位)
 │   ├── risk/                         # 风控模块(占位)
 │   └── analysis/                     # 分析输出(占位)
-├── tests/                            # 单元测试(191 个,覆盖率 92%)
+├── tests/                            # pytest 自动化测试
 └── lofty-quant-design.md             # 模块设计文档
 ```
 

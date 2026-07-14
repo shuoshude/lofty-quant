@@ -209,6 +209,44 @@ def test_repository_filters_factors_by_name_and_version(tmp_path: Path) -> None:
     ]
 
 
+def test_repository_returns_factor_panel_filtered_and_ordered(tmp_path: Path) -> None:
+    """因子区间面板按名称、版本、证券和日期稳定过滤。"""
+    manager = initialized_manager(tmp_path)
+
+    with manager.session() as conn:
+        panel = QuantRepository(conn).get_factor_panel(
+            date(2024, 1, 2),
+            date(2024, 1, 3),
+            "momentum_20d",
+            factor_version="v1",
+        )
+
+    assert isinstance(panel, pl.DataFrame)
+    assert panel.columns == [
+        "ts_code",
+        "trade_date",
+        "factor_name",
+        "factor_value",
+        "factor_version",
+    ]
+    assert panel.to_dicts() == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": date(2024, 1, 2),
+            "factor_name": "momentum_20d",
+            "factor_value": 1.23,
+            "factor_version": "v1",
+        },
+        {
+            "ts_code": "000002.SZ",
+            "trade_date": date(2024, 1, 3),
+            "factor_name": "momentum_20d",
+            "factor_value": 2.34,
+            "factor_version": "v1",
+        },
+    ]
+
+
 def test_repository_returns_trade_calendar(tmp_path: Path) -> None:
     manager = initialized_manager(tmp_path)
 
@@ -284,11 +322,16 @@ def initialized_manager(tmp_path: Path) -> DuckDBManager:
     write_parquet(
         processed_dir / "factors" / "year=2024" / "month=01" / "factors.parquet",
         {
-            "ts_code": ["000001.SZ", "000001.SZ"],
-            "trade_date": [date(2024, 1, 2), date(2024, 1, 2)],
-            "factor_name": ["momentum_20d", "momentum_20d"],
-            "factor_value": [1.23, 9.99],
-            "factor_version": ["v1", "v2"],
+            "ts_code": ["000001.SZ", "000001.SZ", "000002.SZ", "000001.SZ"],
+            "trade_date": [
+                date(2024, 1, 2),
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                date(2024, 1, 3),
+            ],
+            "factor_name": ["momentum_20d", "momentum_20d", "momentum_20d", "size"],
+            "factor_value": [1.23, 9.99, 2.34, 0.56],
+            "factor_version": ["v1", "v2", "v1", "v1"],
         },
     )
     manager = DuckDBManager(tmp_path / "quant.duckdb", processed_dir)
